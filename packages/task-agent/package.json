@@ -1,0 +1,19 @@
+{
+  "name": "@iamonit/task-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only Excel-driven task selector for IAMONIT",
+  "scripts": {
+    "start": "ts-node src/cli.ts",
+    "test": "node --require ts-node/register --test src/*.spec.ts",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.1.3"
+  }
+}
