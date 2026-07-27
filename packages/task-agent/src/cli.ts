@@ -3,6 +3,7 @@ import {
   AUTHORITATIVE_WORKBOOK_PATH,
   readWorkbookTasks,
 } from './workbook-reader';
+import { normalizeFileClass } from './path-normalizer';
 import { selectEligibleTask } from './task-selector';
 
 async function main(): Promise<void> {
@@ -23,20 +24,26 @@ async function main(): Promise<void> {
   }
 
   const { codingTask, relatedBacklogTasks } = selected;
+  const normalizedFileClass = normalizeFileClass(codingTask.fileClass);
   const dependencies = [
     ...new Set(relatedBacklogTasks.flatMap((task) => task.dependencies)),
   ];
 
   console.log(`Code task: ${codingTask.code}`);
   console.log(`Related Jira task: ${codingTask.relatedJiraTasks.join(', ')}`);
+  console.log(`Task description: ${codingTask.exactCodingTask}`);
+  console.log(`Original File / Class: ${normalizedFileClass.original}`);
   console.log(
-    `Jira title: ${relatedBacklogTasks.map((task) => task.title).join('; ')}`,
+    `Normalized paths: ${normalizedFileClass.repositoryPaths.join(', ')}`,
   );
-  console.log(`Task: ${codingTask.exactCodingTask}`);
+  console.log(
+    `Path classification: ${normalizedFileClass.entries
+      .map((entry) => `${entry.normalized} (${entry.classification})`)
+      .join(', ')}`,
+  );
   console.log(
     `Dependencies: ${dependencies.length > 0 ? dependencies.join(', ') : 'None'}`,
   );
-  console.log(`File / Class: ${codingTask.fileClass}`);
   console.log(`Acceptance Criteria: ${codingTask.acceptanceCriteria}`);
   console.log(`Status: ${codingTask.status.trim()}`);
 }
