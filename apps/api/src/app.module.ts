@@ -9,13 +9,15 @@ import { UploadsModule } from './modules/uploads/uploads.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { ConfigModule } from '@nestjs/config';
-import envConfig from './config/env.config';
+import envConfig, { validateEnvironment } from './config/env.config';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       load: [envConfig],
+      validate: validateEnvironment,
       isGlobal: true,
+      cache: true,
     }),
     AuthModule,
     UsersModule,
