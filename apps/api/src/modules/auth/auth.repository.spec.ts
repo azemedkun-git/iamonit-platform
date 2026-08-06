@@ -94,4 +94,74 @@ describe("AuthRepository", () => {
       repository.findAppUserById("missing-user-id"),
     ).resolves.toBeNull();
   });
+
+  it("loads authoritative application access with tenant state", async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          user_id: "3d10ad51-1d6c-4dfc-9a12-38337bed3440",
+          tenant_id: "1aa6f7f9-e3ec-4b32-93ab-5baac785c05f",
+          role: "dispatcher",
+          tenant_exists: true,
+          tenant_status: "active",
+        },
+      ],
+    });
+    const repository = new AuthRepository("postgresql://unused", {
+      connect: jest.fn(),
+      query,
+    });
+
+    await expect(
+      repository.findApplicationAccess(
+        "3d10ad51-1d6c-4dfc-9a12-38337bed3440",
+      ),
+    ).resolves.toEqual({
+      userId: "3d10ad51-1d6c-4dfc-9a12-38337bed3440",
+      tenantId: "1aa6f7f9-e3ec-4b32-93ab-5baac785c05f",
+      role: "dispatcher",
+      tenantExists: true,
+      tenantStatus: "active",
+    });
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("LEFT JOIN public.tenants"),
+      ["3d10ad51-1d6c-4dfc-9a12-38337bed3440"],
+    );
+  });
+
+  it("preserves a missing tenant in the authoritative access result", async () => {
+    const repository = new AuthRepository("postgresql://unused", {
+      connect: jest.fn(),
+      query: jest.fn().mockResolvedValue({
+        rows: [
+          {
+            user_id: "3d10ad51-1d6c-4dfc-9a12-38337bed3440",
+            tenant_id: "1aa6f7f9-e3ec-4b32-93ab-5baac785c05f",
+            role: "admin",
+            tenant_exists: false,
+            tenant_status: null,
+          },
+        ],
+      }),
+    });
+
+    await expect(
+      repository.findApplicationAccess(
+        "3d10ad51-1d6c-4dfc-9a12-38337bed3440",
+      ),
+    ).resolves.toMatchObject({ tenantExists: false, tenantStatus: null });
+  });
+
+  it("returns null when authoritative application access has no app user", async () => {
+    const repository = new AuthRepository("postgresql://unused", {
+      connect: jest.fn(),
+      query: jest.fn().mockResolvedValue({ rows: [] }),
+    });
+
+    await expect(
+      repository.findApplicationAccess(
+        "3d10ad51-1d6c-4dfc-9a12-38337bed3440",
+      ),
+    ).resolves.toBeNull();
+  });
 });

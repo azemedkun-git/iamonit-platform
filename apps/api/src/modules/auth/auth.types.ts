@@ -2,6 +2,12 @@ export const AUTH_ROLES = ['admin', 'dispatcher', 'car_puller'] as const;
 
 export type AuthRole = (typeof AUTH_ROLES)[number];
 
+export interface AuthenticatedContext {
+  userId: string;
+  tenantId: string;
+  role: AuthRole;
+}
+
 export interface AuthSession {
   accessToken: string;
   refreshToken: string;

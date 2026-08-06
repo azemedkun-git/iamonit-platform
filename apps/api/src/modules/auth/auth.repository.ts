@@ -21,6 +21,14 @@ export interface AppUserProfile {
   phone: string;
 }
 
+export interface ApplicationAccess {
+  userId: string;
+  tenantId: string;
+  role: string;
+  tenantExists: boolean;
+  tenantStatus: string | null;
+}
+
 type DatabasePool = Pick<Pool, "connect" | "query">;
 
 @Injectable()
@@ -87,6 +95,39 @@ export class AuthRepository {
           role: profile.role,
           fullName: profile.full_name,
           phone: profile.phone,
+        }
+      : null;
+  }
+
+  async findApplicationAccess(
+    authUserId: string,
+  ): Promise<ApplicationAccess | null> {
+    const result = await this.pool.query<{
+      user_id: string;
+      tenant_id: string;
+      role: string;
+      tenant_exists: boolean;
+      tenant_status: string | null;
+    }>(
+      `SELECT app_users.id AS user_id,
+              app_users.tenant_id,
+              app_users.role,
+              (tenants.id IS NOT NULL) AS tenant_exists,
+              tenants.status AS tenant_status
+       FROM public.app_users AS app_users
+       LEFT JOIN public.tenants AS tenants ON tenants.id = app_users.tenant_id
+       WHERE app_users.id = $1`,
+      [authUserId],
+    );
+    const access = result.rows[0];
+
+    return access
+      ? {
+          userId: access.user_id,
+          tenantId: access.tenant_id,
+          role: access.role,
+          tenantExists: access.tenant_exists,
+          tenantStatus: access.tenant_status,
         }
       : null;
   }
