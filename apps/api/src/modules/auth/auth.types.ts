@@ -24,4 +24,3 @@ export interface AuthResponse {
   requiresEmailConfirmation: boolean;
   user: AuthUserContext;
 }
-

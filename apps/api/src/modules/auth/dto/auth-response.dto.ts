@@ -70,4 +70,3 @@ export class AuthResponseDto implements AuthResponse {
     this.user = new AuthUserDto(response.user);
   }
 }
-

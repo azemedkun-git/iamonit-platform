@@ -40,4 +40,3 @@ export const supabaseClientProviders = [
   supabasePublicClientProvider,
   supabaseAdminClientProvider,
 ] as const;
-
