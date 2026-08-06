@@ -1,21 +1,24 @@
 import {
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   InternalServerErrorException,
   Logger,
   Optional,
   ServiceUnavailableException,
-} from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { SupabaseClient } from '@supabase/supabase-js';
+  UnauthorizedException,
+} from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { SupabaseClient } from "@supabase/supabase-js";
 import {
   SUPABASE_ADMIN_CLIENT,
   SUPABASE_PUBLIC_CLIENT,
-} from '../../common/supabase/supabase.constants';
-import { AuthRepository } from './auth.repository';
-import { AuthResponse, AuthSession } from './auth.types';
-import { RegisterDto } from './dto/register.dto';
+} from "../../common/supabase/supabase.constants";
+import { AuthRepository } from "./auth.repository";
+import { AUTH_ROLES, AuthResponse, AuthSession } from "./auth.types";
+import { LoginDto } from "./dto/login.dto";
+import { RegisterDto } from "./dto/register.dto";
 
 @Injectable()
 export class AuthService {
@@ -32,7 +35,7 @@ export class AuthService {
   ) {
     this.repository =
       repository ??
-      new AuthRepository(configService.getOrThrow<string>('databaseUrl'));
+      new AuthRepository(configService.getOrThrow<string>("databaseUrl"));
   }
 
   async register(input: RegisterDto): Promise<AuthResponse> {
@@ -55,7 +58,7 @@ export class AuthService {
 
     if (!authUser) {
       throw new InternalServerErrorException(
-        'Registration could not be completed.',
+        "Registration could not be completed.",
       );
     }
 
@@ -75,14 +78,14 @@ export class AuthService {
         );
 
         if (compensation.error) {
-          throw new Error('Auth compensation was rejected.');
+          throw new Error("Auth compensation was rejected.");
         }
       } catch {
         this.logger.error(
           `Auth compensation failed for orphaned user ${authUser.id}.`,
         );
         throw new InternalServerErrorException(
-          'Registration could not be completed.',
+          "Registration could not be completed.",
         );
       }
 
@@ -98,9 +101,67 @@ export class AuthService {
         id: authUser.id,
         email: authUser.email ?? input.email,
         tenantId,
-        role: 'admin',
+        role: "admin",
         fullName: input.fullName,
         phone: input.phone,
+      },
+    };
+  }
+
+  async login(input: LoginDto): Promise<AuthResponse> {
+    let authResult;
+
+    try {
+      authResult = await this.publicClient.auth.signInWithPassword({
+        email: input.email,
+        password: input.password,
+      });
+    } catch (error) {
+      throw this.mapLoginProviderError(error);
+    }
+
+    if (authResult.error) {
+      throw this.mapLoginProviderError(authResult.error);
+    }
+
+    const { session, user } = authResult.data;
+
+    if (!session || !user || !user.email) {
+      throw new InternalServerErrorException("Login could not be completed.");
+    }
+
+    let profile;
+
+    try {
+      profile = await this.repository.findAppUserById(user.id);
+    } catch (error) {
+      throw this.mapLoginDatabaseError(error);
+    }
+
+    if (!profile) {
+      throw new ForbiddenException("Account access is not configured.");
+    }
+
+    if (
+      profile.id !== user.id ||
+      !profile.tenantId ||
+      !profile.fullName ||
+      !profile.phone ||
+      !AUTH_ROLES.includes(profile.role)
+    ) {
+      throw new InternalServerErrorException("Login could not be completed.");
+    }
+
+    return {
+      session: this.toSession(session),
+      requiresEmailConfirmation: false,
+      user: {
+        id: profile.id,
+        email: user.email,
+        tenantId: profile.tenantId,
+        role: profile.role,
+        fullName: profile.fullName,
+        phone: profile.phone,
       },
     };
   }
@@ -124,37 +185,59 @@ export class AuthService {
   private mapProviderError(error: unknown): Error {
     if (isDuplicateEmailError(error)) {
       return new ConflictException(
-        'An account with this email already exists.',
+        "An account with this email already exists.",
       );
     }
 
     if (isUnavailableError(error)) {
       return new ServiceUnavailableException(
-        'Authentication provider is unavailable.',
+        "Authentication provider is unavailable.",
       );
     }
 
     return new InternalServerErrorException(
-      'Registration could not be completed.',
+      "Registration could not be completed.",
     );
   }
 
   private mapDatabaseError(error: unknown): Error {
-    if (isPostgresError(error) && error.code === '23505') {
+    if (isPostgresError(error) && error.code === "23505") {
       return new ConflictException(
-        error.constraint?.includes('tenant')
-          ? 'A company with this name already exists.'
-          : 'An account with this email already exists.',
+        error.constraint?.includes("tenant")
+          ? "A company with this name already exists."
+          : "An account with this email already exists.",
       );
     }
 
     if (isUnavailableError(error)) {
-      return new ServiceUnavailableException('Database is unavailable.');
+      return new ServiceUnavailableException("Database is unavailable.");
     }
 
     return new InternalServerErrorException(
-      'Registration could not be completed.',
+      "Registration could not be completed.",
     );
+  }
+
+  private mapLoginProviderError(error: unknown): Error {
+    if (isUnavailableError(error)) {
+      return new ServiceUnavailableException(
+        "Authentication provider is unavailable.",
+      );
+    }
+
+    if (isInvalidCredentialsError(error)) {
+      return new UnauthorizedException("Invalid email or password.");
+    }
+
+    return new InternalServerErrorException("Login could not be completed.");
+  }
+
+  private mapLoginDatabaseError(error: unknown): Error {
+    if (isUnavailableError(error)) {
+      return new ServiceUnavailableException("Database is unavailable.");
+    }
+
+    return new InternalServerErrorException("Login could not be completed.");
   }
 }
 
@@ -166,23 +249,23 @@ interface ErrorDetails {
 }
 
 function errorDetails(error: unknown): ErrorDetails {
-  return typeof error === 'object' && error !== null
+  return typeof error === "object" && error !== null
     ? (error as ErrorDetails)
     : {};
 }
 
 function isPostgresError(error: unknown): error is ErrorDetails {
-  return typeof errorDetails(error).code === 'string';
+  return typeof errorDetails(error).code === "string";
 }
 
 function isDuplicateEmailError(error: unknown): boolean {
   const details = errorDetails(error);
-  const message = details.message?.toLowerCase() ?? '';
+  const message = details.message?.toLowerCase() ?? "";
 
   return (
-    details.code === 'user_already_exists' ||
-    message.includes('already registered') ||
-    message.includes('already exists')
+    details.code === "user_already_exists" ||
+    message.includes("already registered") ||
+    message.includes("already exists")
   );
 }
 
@@ -190,10 +273,20 @@ function isUnavailableError(error: unknown): boolean {
   const details = errorDetails(error);
 
   return (
-    (typeof details.status === 'number' && details.status >= 500) ||
-    details.code?.startsWith('08') === true ||
-    ['57P01', '57P02', '57P03', 'ECONNREFUSED', 'ETIMEDOUT'].includes(
-      details.code ?? '',
+    (typeof details.status === "number" && details.status >= 500) ||
+    details.code?.startsWith("08") === true ||
+    ["57P01", "57P02", "57P03", "ECONNREFUSED", "ETIMEDOUT"].includes(
+      details.code ?? "",
     )
+  );
+}
+
+function isInvalidCredentialsError(error: unknown): boolean {
+  const details = errorDetails(error);
+  const message = details.message?.toLowerCase() ?? "";
+
+  return (
+    details.code === "invalid_credentials" ||
+    (details.status === 400 && message.includes("invalid login credentials"))
   );
 }
