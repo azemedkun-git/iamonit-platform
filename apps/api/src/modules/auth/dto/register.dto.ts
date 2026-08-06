@@ -16,10 +16,6 @@ export class RegisterDto {
 
   @IsString()
   @IsNotEmpty()
-  role: string;
-
-  @IsString()
-  @IsNotEmpty()
   companyName: string;
 
   @IsString()
