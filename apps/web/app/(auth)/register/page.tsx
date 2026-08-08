@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
-
-type Role = "administrator" | "team-member";
+import { clearCurrentAuthUser, establishAuthSession } from "../../../lib/auth";
+import { register } from "../../../lib/api";
 
 type FieldErrors = {
   fullName?: string;
@@ -12,11 +13,12 @@ type FieldErrors = {
   phone?: string;
   password?: string;
   confirmPassword?: string;
-  role?: string;
 };
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const phonePattern = /^[+]?[(]?[0-9]{1,4}[)]?[-\s./0-9]{6,}$/;
+const phonePattern = /^\+[1-9]\d{6,14}$/;
+const phoneFormatError =
+  "Enter a phone number in international format, e.g. +14694681177.";
 
 function getPasswordError(password: string) {
   if (!password) {
@@ -43,15 +45,16 @@ function getConfirmPasswordError(confirmPassword: string, password: string) {
 }
 
 export default function RegisterPage() {
+  const router = useRouter();
   const [fullName, setFullName] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [role, setRole] = useState<Role | "">("");
   const [errors, setErrors] = useState<FieldErrors>({});
   const [formError, setFormError] = useState<string | null>(null);
+  const [confirmationRequired, setConfirmationRequired] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   function validate() {
@@ -74,7 +77,7 @@ export default function RegisterPage() {
     if (!phone.trim()) {
       nextErrors.phone = "Enter your phone number.";
     } else if (!phonePattern.test(phone.trim())) {
-      nextErrors.phone = "Enter a valid phone number.";
+      nextErrors.phone = phoneFormatError;
     }
 
     const passwordError = getPasswordError(password);
@@ -90,10 +93,6 @@ export default function RegisterPage() {
       nextErrors.confirmPassword = confirmPasswordError;
     }
 
-    if (!role) {
-      nextErrors.role = "Select your role.";
-    }
-
     setErrors(nextErrors);
     return Object.keys(nextErrors).length === 0;
   }
@@ -106,21 +105,46 @@ export default function RegisterPage() {
     }
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isSubmitting) {
+      return;
+    }
     setFormError(null);
+    setConfirmationRequired(false);
 
     if (!validate()) {
       return;
     }
 
-    // This task intentionally stops at the UI shell. A later integration task
-    // will replace this presentation state with the registration request.
     setIsSubmitting(true);
-    window.setTimeout(() => {
-      setFormError("Registration is not connected yet. Please try again later.");
+    try {
+      const response = await register({
+        email: email.trim(),
+        password,
+        companyName: companyName.trim(),
+        fullName: fullName.trim(),
+        phone: phone.trim(),
+      });
+      if (!response.session && response.requiresEmailConfirmation) {
+        clearCurrentAuthUser();
+        setConfirmationRequired(true);
+        return;
+      }
+      if (!response.session) {
+        throw new Error("Authentication could not be completed. Please try again.");
+      }
+      await establishAuthSession(response);
+      router.replace("/");
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : "Authentication could not be completed. Please try again.",
+      );
+    } finally {
       setIsSubmitting(false);
-    }, 400);
+    }
   }
 
   const inputClassName =
@@ -150,6 +174,13 @@ export default function RegisterPage() {
             role="alert"
           >
             {formError}
+          </div>
+        ) : null}
+
+        {confirmationRequired ? (
+          <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900" role="status">
+            Check your email and confirm your account before signing in. Then go to{" "}
+            <Link href="/login" className="font-semibold underline">the login page</Link>.
           </div>
         ) : null}
 
@@ -350,58 +381,6 @@ export default function RegisterPage() {
               </p>
             ) : null}
           </div>
-
-          <fieldset
-            aria-invalid={Boolean(errors.role)}
-            aria-describedby={errors.role ? "role-error" : undefined}
-            disabled={isSubmitting}
-          >
-            <legend className="text-sm font-medium text-slate-800">Your role</legend>
-            <div className="mt-2 grid gap-3 sm:grid-cols-2">
-              {[
-                {
-                  value: "administrator" as const,
-                  label: "Administrator",
-                  description: "Set up and manage your organization.",
-                },
-                {
-                  value: "team-member" as const,
-                  label: "Team member",
-                  description: "Work on tasks within your organization.",
-                },
-              ].map((option) => (
-                <label
-                  key={option.value}
-                  className="flex cursor-pointer gap-3 rounded-lg border border-slate-300 p-4 transition has-checked:border-blue-700 has-checked:bg-blue-50 has-disabled:cursor-not-allowed has-disabled:bg-slate-100"
-                >
-                  <input
-                    type="radio"
-                    name="role"
-                    value={option.value}
-                    checked={role === option.value}
-                    onChange={() => {
-                      setRole(option.value);
-                      clearError("role");
-                    }}
-                    className="mt-1 size-4 accent-blue-700"
-                  />
-                  <span>
-                    <span className="block text-sm font-semibold text-slate-900">
-                      {option.label}
-                    </span>
-                    <span className="mt-1 block text-sm leading-5 text-slate-600">
-                      {option.description}
-                    </span>
-                  </span>
-                </label>
-              ))}
-            </div>
-            {errors.role ? (
-              <p id="role-error" className="mt-2 text-sm text-red-700" role="alert">
-                {errors.role}
-              </p>
-            ) : null}
-          </fieldset>
 
           <button
             type="submit"

@@ -1,7 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
+import { establishAuthSession } from "../../../lib/auth";
+import { login } from "../../../lib/api";
 
 type FieldErrors = {
   email?: string;
@@ -11,6 +14,7 @@ type FieldErrors = {
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function LoginPage() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errors, setErrors] = useState<FieldErrors>({});
@@ -36,21 +40,34 @@ export default function LoginPage() {
     return Object.keys(nextErrors).length === 0;
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isSubmitting) {
+      return;
+    }
     setFormError(null);
 
     if (!validate()) {
       return;
     }
 
-    // This task intentionally stops at the UI shell. A later integration task
-    // will replace this presentation state with the authentication request.
     setIsSubmitting(true);
-    window.setTimeout(() => {
-      setFormError("Login is not connected yet. Please try again later.");
+    try {
+      const response = await login({ email: email.trim(), password });
+      if (!response.session || response.requiresEmailConfirmation) {
+        throw new Error("Authentication could not be completed. Please try again.");
+      }
+      await establishAuthSession(response);
+      router.replace("/");
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : "Authentication could not be completed. Please try again.",
+      );
+    } finally {
       setIsSubmitting(false);
-    }, 400);
+    }
   }
 
   const isSubmitDisabled = isSubmitting;
