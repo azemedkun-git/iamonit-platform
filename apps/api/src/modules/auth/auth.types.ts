@@ -1,12 +1,8 @@
-export const AUTH_ROLES = ['admin', 'dispatcher', 'car_puller'] as const;
+export const AUTH_ROLES = ["admin", "dispatcher", "car_puller"] as const;
 
 export type AuthRole = (typeof AUTH_ROLES)[number];
 
-export const MEMBERSHIP_STATUSES = [
-  'active',
-  'suspended',
-  'removed',
-] as const;
+export const MEMBERSHIP_STATUSES = ["active", "suspended", "removed"] as const;
 
 export type MembershipStatus = (typeof MEMBERSHIP_STATUSES)[number];
 
@@ -62,4 +58,16 @@ export interface AuthResponse {
   session: AuthSession | null;
   requiresEmailConfirmation: boolean;
   user: AuthUserContext;
+}
+
+export interface AuthUserProfile extends UserProfileRecord {
+  email: string;
+}
+
+export interface MultiTenantAuthResponse {
+  session: AuthSession | null;
+  requiresEmailConfirmation: boolean;
+  profile: AuthUserProfile;
+  memberships: MembershipSummary[];
+  selectedMembership: MembershipSummary | null;
 }

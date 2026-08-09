@@ -18,6 +18,21 @@ export interface CreatedCompanyAccount {
   tenantId: string;
 }
 
+export interface CreateUserProfileInput {
+  authUserId: string;
+  fullName: string;
+  phone: string;
+}
+
+export interface CreateTransporterAccountInput extends CreateUserProfileInput {
+  companyName: string;
+}
+
+export interface CreatedTransporterAccount {
+  profile: UserProfileRecord;
+  membership: MembershipSummary;
+}
+
 export interface AppUserProfile {
   id: string;
   tenantId: string;
@@ -78,6 +93,100 @@ export class AuthRepository {
     }
   }
 
+  async createTransporterAccount(
+    input: CreateTransporterAccountInput,
+  ): Promise<CreatedTransporterAccount> {
+    const client = await this.pool.connect();
+
+    try {
+      await client.query("BEGIN");
+      const profileResult = await client.query<{
+        user_id: string;
+        full_name: string;
+        phone: string;
+      }>(
+        `INSERT INTO public.user_profiles (user_id, full_name, phone)
+         VALUES ($1, $2, $3)
+         RETURNING user_id, full_name, phone`,
+        [input.authUserId, input.fullName, input.phone],
+      );
+      const tenantResult = await client.query<{ id: string; name: string }>(
+        `INSERT INTO public.tenants (name)
+         VALUES ($1)
+         RETURNING id, name`,
+        [input.companyName],
+      );
+      const profile = profileResult.rows[0];
+      const tenant = tenantResult.rows[0];
+
+      if (!profile || !tenant) {
+        throw new Error("Account creation returned incomplete data.");
+      }
+
+      const membershipResult = await client.query<{
+        membership_id: string;
+        tenant_id: string;
+        tenant_name: string;
+        role: AuthRole;
+        status: MembershipStatus;
+      }>(
+        `INSERT INTO public.tenant_memberships
+          (user_id, tenant_id, role, status)
+         VALUES ($1, $2, 'admin', 'active')
+         RETURNING id AS membership_id, tenant_id, $3::text AS tenant_name,
+                   role, status`,
+        [input.authUserId, tenant.id, tenant.name],
+      );
+      const membership = membershipResult.rows[0];
+
+      if (!membership) {
+        throw new Error("Membership creation returned no data.");
+      }
+
+      await client.query("COMMIT");
+
+      return {
+        profile: {
+          userId: profile.user_id,
+          fullName: profile.full_name,
+          phone: profile.phone,
+        },
+        membership: this.mapMembership(membership),
+      };
+    } catch (error) {
+      await this.rollback(client);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async createUserProfile(
+    input: CreateUserProfileInput,
+  ): Promise<UserProfileRecord> {
+    const result = await this.pool.query<{
+      user_id: string;
+      full_name: string;
+      phone: string;
+    }>(
+      `INSERT INTO public.user_profiles (user_id, full_name, phone)
+       VALUES ($1, $2, $3)
+       RETURNING user_id, full_name, phone`,
+      [input.authUserId, input.fullName, input.phone],
+    );
+    const profile = result.rows[0];
+
+    if (!profile) {
+      throw new Error("Profile creation returned no data.");
+    }
+
+    return {
+      userId: profile.user_id,
+      fullName: profile.full_name,
+      phone: profile.phone,
+    };
+  }
+
   async findAppUserById(authUserId: string): Promise<AppUserProfile | null> {
     const result = await this.pool.query<{
       id: string;
@@ -126,9 +235,7 @@ export class AuthRepository {
       : null;
   }
 
-  async findMembershipsByUserId(
-    userId: string,
-  ): Promise<MembershipSummary[]> {
+  async findMembershipsByUserId(userId: string): Promise<MembershipSummary[]> {
     const result = await this.pool.query<{
       membership_id: string;
       tenant_id: string;
@@ -181,6 +288,35 @@ export class AuthRepository {
     const membership = result.rows[0];
 
     return membership ? this.mapMembership(membership) : null;
+  }
+
+  async findActiveMembershipsByUserId(
+    userId: string,
+  ): Promise<MembershipSummary[]> {
+    const result = await this.pool.query<{
+      membership_id: string;
+      tenant_id: string;
+      tenant_name: string;
+      role: AuthRole;
+      status: MembershipStatus;
+    }>(
+      `SELECT tenant_memberships.id AS membership_id,
+              tenant_memberships.tenant_id,
+              tenants.name AS tenant_name,
+              tenant_memberships.role,
+              tenant_memberships.status
+       FROM public.tenant_memberships AS tenant_memberships
+       INNER JOIN public.tenants AS tenants
+         ON tenants.id = tenant_memberships.tenant_id
+       WHERE tenant_memberships.user_id = $1
+         AND tenant_memberships.status = 'active'
+         AND tenants.status = 'active'
+       ORDER BY tenants.name, tenant_memberships.tenant_id,
+                tenant_memberships.id`,
+      [userId],
+    );
+
+    return result.rows.map((membership) => this.mapMembership(membership));
   }
 
   async findApplicationAccess(

@@ -16,8 +16,16 @@ import {
   SUPABASE_PUBLIC_CLIENT,
 } from "../../common/supabase/supabase.constants";
 import { AuthRepository } from "./auth.repository";
-import { AUTH_ROLES, AuthResponse, AuthSession } from "./auth.types";
+import {
+  AUTH_ROLES,
+  AuthResponse,
+  AuthSession,
+  MembershipSummary,
+  MultiTenantAuthResponse,
+} from "./auth.types";
 import { LoginDto } from "./dto/login.dto";
+import { RegisterCarPullerDto } from "./dto/register-car-puller.dto";
+import { RegisterTransporterDto } from "./dto/register-transporter.dto";
 import { RegisterDto } from "./dto/register.dto";
 
 @Injectable()
@@ -166,6 +174,183 @@ export class AuthService {
     };
   }
 
+  async registerTransporter(
+    input: RegisterTransporterDto,
+  ): Promise<MultiTenantAuthResponse> {
+    const authResult = await this.signUp(input.email, input.password);
+    const authUser = authResult.data.user;
+
+    if (!authUser) {
+      throw new InternalServerErrorException(
+        "Registration could not be completed.",
+      );
+    }
+
+    if (!isNewAuthIdentity(authUser)) {
+      throw new ConflictException("An account with this email already exists.");
+    }
+
+    let account;
+
+    try {
+      account = await this.repository.createTransporterAccount({
+        authUserId: authUser.id,
+        companyName: input.companyName,
+        fullName: input.fullName,
+        phone: input.phone,
+      });
+    } catch (databaseError) {
+      await this.compensateNewAuthIdentity(authUser.id);
+      throw this.mapMultiTenantRegistrationDatabaseError(databaseError);
+    }
+
+    const session = authResult.data.session;
+
+    return {
+      session: session ? this.toSession(session) : null,
+      requiresEmailConfirmation: session === null,
+      profile: {
+        ...account.profile,
+        email: authUser.email ?? input.email,
+      },
+      memberships: [account.membership],
+      selectedMembership: account.membership,
+    };
+  }
+
+  async registerCarPuller(
+    input: RegisterCarPullerDto,
+  ): Promise<MultiTenantAuthResponse> {
+    const authResult = await this.signUp(input.email, input.password);
+    const authUser = authResult.data.user;
+
+    if (!authUser) {
+      throw new InternalServerErrorException(
+        "Registration could not be completed.",
+      );
+    }
+
+    if (!isNewAuthIdentity(authUser)) {
+      throw new ConflictException("An account with this email already exists.");
+    }
+
+    let profile;
+
+    try {
+      profile = await this.repository.createUserProfile({
+        authUserId: authUser.id,
+        fullName: input.fullName,
+        phone: input.phone,
+      });
+    } catch (databaseError) {
+      await this.compensateNewAuthIdentity(authUser.id);
+      throw this.mapMultiTenantRegistrationDatabaseError(databaseError);
+    }
+
+    const session = authResult.data.session;
+
+    return {
+      session: session ? this.toSession(session) : null,
+      requiresEmailConfirmation: session === null,
+      profile: {
+        ...profile,
+        email: authUser.email ?? input.email,
+      },
+      memberships: [],
+      selectedMembership: null,
+    };
+  }
+
+  async loginMultiTenant(input: LoginDto): Promise<MultiTenantAuthResponse> {
+    let authResult;
+
+    try {
+      authResult = await this.publicClient.auth.signInWithPassword({
+        email: input.email,
+        password: input.password,
+      });
+    } catch (error) {
+      throw this.mapLoginProviderError(error);
+    }
+
+    if (authResult.error) {
+      throw this.mapLoginProviderError(authResult.error);
+    }
+
+    const { session, user } = authResult.data;
+
+    if (!session || !user || !user.email) {
+      throw new InternalServerErrorException("Login could not be completed.");
+    }
+
+    let profile;
+    let memberships: MembershipSummary[];
+
+    try {
+      profile = await this.repository.findUserProfileById(user.id);
+      memberships = await this.repository.findActiveMembershipsByUserId(
+        user.id,
+      );
+    } catch (error) {
+      throw this.mapLoginDatabaseError(error);
+    }
+
+    if (!profile) {
+      throw new ForbiddenException("Account access is not configured.");
+    }
+
+    if (
+      profile.userId !== user.id ||
+      !profile.fullName ||
+      !profile.phone ||
+      memberships.some((membership) => !isValidActiveMembership(membership))
+    ) {
+      throw new InternalServerErrorException("Login could not be completed.");
+    }
+
+    return {
+      session: this.toSession(session),
+      requiresEmailConfirmation: false,
+      profile: { ...profile, email: user.email },
+      memberships,
+      selectedMembership: memberships.length === 1 ? memberships[0] : null,
+    };
+  }
+
+  private async signUp(email: string, password: string) {
+    let authResult;
+
+    try {
+      authResult = await this.publicClient.auth.signUp({ email, password });
+    } catch (error) {
+      throw this.mapProviderError(error);
+    }
+
+    if (authResult.error) {
+      throw this.mapProviderError(authResult.error);
+    }
+
+    return authResult;
+  }
+
+  private async compensateNewAuthIdentity(authUserId: string): Promise<void> {
+    try {
+      const compensation =
+        await this.adminClient.auth.admin.deleteUser(authUserId);
+
+      if (compensation.error) {
+        throw new Error("Auth compensation was rejected.");
+      }
+    } catch {
+      this.logger.error(
+        `Auth compensation failed for orphaned user ${authUserId}.`,
+      );
+      throw new InternalServerErrorException(
+        "Registration could not be completed.",
+      );
+    }
+  }
+
   private toSession(session: {
     access_token: string;
     refresh_token: string;
@@ -216,6 +401,16 @@ export class AuthService {
     return new InternalServerErrorException(
       "Registration could not be completed.",
     );
+  }
+
+  private mapMultiTenantRegistrationDatabaseError(error: unknown): Error {
+    if (isPostgresError(error) && error.code === "23505") {
+      return new ConflictException(
+        "An account with this email already exists.",
+      );
+    }
+
+    return this.mapDatabaseError(error);
   }
 
   private mapLoginProviderError(error: unknown): Error {
@@ -288,5 +483,19 @@ function isInvalidCredentialsError(error: unknown): boolean {
   return (
     details.code === "invalid_credentials" ||
     (details.status === 400 && message.includes("invalid login credentials"))
+  );
+}
+
+function isNewAuthIdentity(user: { identities?: unknown[] }): boolean {
+  return user.identities === undefined || user.identities.length > 0;
+}
+
+function isValidActiveMembership(membership: MembershipSummary): boolean {
+  return (
+    Boolean(
+      membership.membershipId && membership.tenantId && membership.tenantName,
+    ) &&
+    membership.status === "active" &&
+    AUTH_ROLES.includes(membership.role)
   );
 }

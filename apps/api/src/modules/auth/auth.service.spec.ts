@@ -42,6 +42,25 @@ describe("AuthService", () => {
     const createCompanyAccount = jest
       .fn()
       .mockResolvedValue({ tenantId: "tenant-id" });
+    const createTransporterAccount = jest.fn().mockResolvedValue({
+      profile: {
+        userId: user.id,
+        fullName: registration.fullName,
+        phone: registration.phone,
+      },
+      membership: {
+        membershipId: "membership-id",
+        tenantId: "tenant-id",
+        tenantName: registration.companyName,
+        role: "admin",
+        status: "active",
+      },
+    });
+    const createUserProfile = jest.fn().mockResolvedValue({
+      userId: user.id,
+      fullName: "Casey Puller",
+      phone: "+13125550102",
+    });
     const findAppUserById = jest.fn().mockResolvedValue({
       id: user.id,
       tenantId: "tenant-id",
@@ -49,6 +68,12 @@ describe("AuthService", () => {
       fullName: "Dana Dispatcher",
       phone: "+13125550101",
     });
+    const findUserProfileById = jest.fn().mockResolvedValue({
+      userId: user.id,
+      fullName: "Dana Dispatcher",
+      phone: "+13125550101",
+    });
+    const findActiveMembershipsByUserId = jest.fn().mockResolvedValue([]);
     const publicClient = {
       auth: { signUp, signInWithPassword },
     } as unknown as SupabaseClient;
@@ -57,7 +82,11 @@ describe("AuthService", () => {
     } as unknown as SupabaseClient;
     const repository = {
       createCompanyAccount,
+      createTransporterAccount,
+      createUserProfile,
       findAppUserById,
+      findUserProfileById,
+      findActiveMembershipsByUserId,
     } as unknown as AuthRepository;
     const config = { getOrThrow: jest.fn() } as unknown as ConfigService;
     const service = new AuthService(
@@ -73,7 +102,11 @@ describe("AuthService", () => {
       signInWithPassword,
       deleteUser,
       createCompanyAccount,
+      createTransporterAccount,
+      createUserProfile,
       findAppUserById,
+      findUserProfileById,
+      findActiveMembershipsByUserId,
     };
   }
 
@@ -343,5 +376,271 @@ describe("AuthService", () => {
     expect(serialized).not.toContain("service-role-key");
     expect(serialized).not.toContain("access-secret");
     expect(JSON.stringify(logger.mock.calls)).not.toContain("secret");
+  });
+
+  it("registers a transporter with one selected active admin membership", async () => {
+    const { service, signUp, createTransporterAccount } = setup();
+
+    await expect(service.registerTransporter(registration)).resolves.toEqual({
+      session: {
+        accessToken: "access-secret",
+        refreshToken: "refresh-secret",
+        expiresIn: 3600,
+        expiresAt: 123456,
+        tokenType: "bearer",
+      },
+      requiresEmailConfirmation: false,
+      profile: {
+        userId: user.id,
+        email: registration.email,
+        fullName: registration.fullName,
+        phone: registration.phone,
+      },
+      memberships: [
+        {
+          membershipId: "membership-id",
+          tenantId: "tenant-id",
+          tenantName: registration.companyName,
+          role: "admin",
+          status: "active",
+        },
+      ],
+      selectedMembership: {
+        membershipId: "membership-id",
+        tenantId: "tenant-id",
+        tenantName: registration.companyName,
+        role: "admin",
+        status: "active",
+      },
+    });
+    expect(signUp).toHaveBeenCalledWith({
+      email: registration.email,
+      password: registration.password,
+    });
+    expect(createTransporterAccount).toHaveBeenCalledWith({
+      authUserId: user.id,
+      companyName: registration.companyName,
+      fullName: registration.fullName,
+      phone: registration.phone,
+    });
+  });
+
+  it("supports transporter email confirmation without a session", async () => {
+    const { service } = setup({
+      data: { user, session: null },
+      error: null,
+    });
+
+    await expect(
+      service.registerTransporter(registration),
+    ).resolves.toMatchObject({
+      session: null,
+      requiresEmailConfirmation: true,
+    });
+  });
+
+  it("compensates a new transporter Auth identity after persistence failure", async () => {
+    const { service, createTransporterAccount, deleteUser } = setup();
+    createTransporterAccount.mockRejectedValueOnce(
+      new Error("postgres connection detail"),
+    );
+
+    await expect(
+      service.registerTransporter(registration),
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
+    expect(deleteUser).toHaveBeenCalledWith(user.id);
+  });
+
+  it("allows duplicate company display names and maps only database uniqueness safely", async () => {
+    const { service, createTransporterAccount } = setup();
+
+    await expect(
+      service.registerTransporter(registration),
+    ).resolves.toBeDefined();
+    createTransporterAccount.mockRejectedValueOnce({
+      code: "23505",
+      constraint: "user_profiles_pkey",
+      detail: "raw postgres detail",
+    });
+    await expect(
+      service.registerTransporter(registration),
+    ).rejects.toMatchObject({
+      constructor: ConflictException,
+      response: expect.not.stringContaining("postgres"),
+    });
+  });
+
+  it("does not persist or compensate when Supabase reports an existing identity", async () => {
+    const existingUser = { ...user, identities: [] };
+    const { service, createTransporterAccount, deleteUser } = setup({
+      data: { user: existingUser, session: null },
+      error: null,
+    });
+
+    await expect(
+      service.registerTransporter(registration),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(createTransporterAccount).not.toHaveBeenCalled();
+    expect(deleteUser).not.toHaveBeenCalled();
+  });
+
+  it("registers a car puller as a profile without tenant access", async () => {
+    const { service, createUserProfile, createTransporterAccount } = setup();
+    const input = {
+      email: "puller@example.com",
+      password: "secret-password",
+      fullName: "Casey Puller",
+      phone: "+13125550102",
+    };
+
+    await expect(service.registerCarPuller(input)).resolves.toEqual({
+      session: {
+        accessToken: "access-secret",
+        refreshToken: "refresh-secret",
+        expiresIn: 3600,
+        expiresAt: 123456,
+        tokenType: "bearer",
+      },
+      requiresEmailConfirmation: false,
+      profile: {
+        userId: user.id,
+        email: registration.email,
+        fullName: input.fullName,
+        phone: input.phone,
+      },
+      memberships: [],
+      selectedMembership: null,
+    });
+    expect(createUserProfile).toHaveBeenCalledWith({
+      authUserId: user.id,
+      fullName: input.fullName,
+      phone: input.phone,
+    });
+    expect(createTransporterAccount).not.toHaveBeenCalled();
+  });
+
+  it("supports car-puller confirmation and compensates persistence failure", async () => {
+    const input = {
+      email: "puller@example.com",
+      password: "secret-password",
+      fullName: "Casey Puller",
+      phone: "+13125550102",
+    };
+    const confirmation = setup({
+      data: { user, session: null },
+      error: null,
+    });
+    await expect(
+      confirmation.service.registerCarPuller(input),
+    ).resolves.toMatchObject({
+      session: null,
+      requiresEmailConfirmation: true,
+      memberships: [],
+      selectedMembership: null,
+    });
+
+    const failure = setup();
+    failure.createUserProfile.mockRejectedValueOnce(new Error("database raw"));
+    await expect(
+      failure.service.registerCarPuller(input),
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
+    expect(failure.deleteUser).toHaveBeenCalledWith(user.id);
+  });
+
+  it("logs in multi-tenant users with zero active memberships", async () => {
+    const {
+      service,
+      findUserProfileById,
+      findActiveMembershipsByUserId,
+      findAppUserById,
+    } = setup();
+
+    await expect(service.loginMultiTenant(registration)).resolves.toEqual({
+      session: {
+        accessToken: "access-secret",
+        refreshToken: "refresh-secret",
+        expiresIn: 3600,
+        expiresAt: 123456,
+        tokenType: "bearer",
+      },
+      requiresEmailConfirmation: false,
+      profile: {
+        userId: user.id,
+        email: registration.email,
+        fullName: "Dana Dispatcher",
+        phone: "+13125550101",
+      },
+      memberships: [],
+      selectedMembership: null,
+    });
+    expect(findUserProfileById).toHaveBeenCalledWith(user.id);
+    expect(findActiveMembershipsByUserId).toHaveBeenCalledWith(user.id);
+    expect(findAppUserById).not.toHaveBeenCalled();
+  });
+
+  it("selects exactly one active membership automatically", async () => {
+    const { service, findActiveMembershipsByUserId } = setup();
+    const membership = {
+      membershipId: "membership-id",
+      tenantId: "tenant-id",
+      tenantName: "Acme Transport",
+      role: "dispatcher",
+      status: "active",
+    };
+    findActiveMembershipsByUserId.mockResolvedValueOnce([membership]);
+
+    await expect(service.loginMultiTenant(registration)).resolves.toMatchObject(
+      {
+        memberships: [membership],
+        selectedMembership: membership,
+      },
+    );
+  });
+
+  it("returns all tenant-specific roles but selects none when several are active", async () => {
+    const { service, findActiveMembershipsByUserId } = setup();
+    const memberships = [
+      {
+        membershipId: "membership-a",
+        tenantId: "tenant-a",
+        tenantName: "Alpha Towing",
+        role: "admin",
+        status: "active",
+      },
+      {
+        membershipId: "membership-b",
+        tenantId: "tenant-b",
+        tenantName: "Bravo Recovery",
+        role: "car_puller",
+        status: "active",
+      },
+    ];
+    findActiveMembershipsByUserId.mockResolvedValueOnce(memberships);
+
+    await expect(service.loginMultiTenant(registration)).resolves.toMatchObject(
+      {
+        memberships,
+        selectedMembership: null,
+      },
+    );
+  });
+
+  it("safely rejects invalid credentials and a missing multi-tenant profile", async () => {
+    const invalid = setup();
+    invalid.signInWithPassword.mockResolvedValueOnce({
+      data: { user: null, session: null },
+      error: { code: "invalid_credentials", status: 400 },
+    });
+    await expect(
+      invalid.service.loginMultiTenant(registration),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(invalid.findUserProfileById).not.toHaveBeenCalled();
+
+    const missing = setup();
+    missing.findUserProfileById.mockResolvedValueOnce(null);
+    await expect(
+      missing.service.loginMultiTenant(registration),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(missing.findAppUserById).not.toHaveBeenCalled();
   });
 });

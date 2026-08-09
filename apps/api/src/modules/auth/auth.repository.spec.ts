@@ -54,6 +54,131 @@ describe("AuthRepository", () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
+  it("creates a profile, duplicate-name tenant, and active admin membership atomically", async () => {
+    const query = jest
+      .fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            user_id: "auth-user-id",
+            full_name: "Ada Admin",
+            phone: "+13125550100",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        rows: [{ id: "tenant-id", name: "Acme Transport" }],
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            membership_id: "membership-id",
+            tenant_id: "tenant-id",
+            tenant_name: "Acme Transport",
+            role: "admin",
+            status: "active",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+    const release = jest.fn();
+    const repository = new AuthRepository("postgresql://unused", {
+      connect: jest.fn().mockResolvedValue({ query, release }),
+      query: jest.fn(),
+    });
+
+    await expect(repository.createTransporterAccount(input)).resolves.toEqual({
+      profile: {
+        userId: "auth-user-id",
+        fullName: "Ada Admin",
+        phone: "+13125550100",
+      },
+      membership: {
+        membershipId: "membership-id",
+        tenantId: "tenant-id",
+        tenantName: "Acme Transport",
+        role: "admin",
+        status: "active",
+      },
+    });
+    expect(query).toHaveBeenNthCalledWith(1, "BEGIN");
+    expect(query.mock.calls[1][0]).toContain(
+      "INSERT INTO public.user_profiles",
+    );
+    expect(query.mock.calls[2][0]).toContain("INSERT INTO public.tenants");
+    expect(query.mock.calls[2][0]).not.toMatch(/conflict|name_key/i);
+    expect(query.mock.calls[3][0]).toContain(
+      "INSERT INTO public.tenant_memberships",
+    );
+    expect(query.mock.calls[3][0]).toContain("'admin', 'active'");
+    expect(query).toHaveBeenNthCalledWith(5, "COMMIT");
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("rolls back all transporter writes when membership creation fails", async () => {
+    const failure = new Error("membership write failed");
+    const query = jest
+      .fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            user_id: "auth-user-id",
+            full_name: "Ada Admin",
+            phone: "+13125550100",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        rows: [{ id: "tenant-id", name: "Acme Transport" }],
+      })
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce({ rows: [] });
+    const release = jest.fn();
+    const repository = new AuthRepository("postgresql://unused", {
+      connect: jest.fn().mockResolvedValue({ query, release }),
+      query: jest.fn(),
+    });
+
+    await expect(repository.createTransporterAccount(input)).rejects.toBe(
+      failure,
+    );
+    expect(query).toHaveBeenLastCalledWith("ROLLBACK");
+    expect(query).not.toHaveBeenCalledWith("COMMIT");
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates only a user profile for an individual car puller", async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          user_id: "auth-user-id",
+          full_name: "Casey Puller",
+          phone: "+13125550102",
+        },
+      ],
+    });
+    const repository = new AuthRepository("postgresql://unused", {
+      connect: jest.fn(),
+      query,
+    });
+
+    await expect(
+      repository.createUserProfile({
+        authUserId: "auth-user-id",
+        fullName: "Casey Puller",
+        phone: "+13125550102",
+      }),
+    ).resolves.toEqual({
+      userId: "auth-user-id",
+      fullName: "Casey Puller",
+      phone: "+13125550102",
+    });
+    expect(query.mock.calls[0][0]).toContain("public.user_profiles");
+    expect(query.mock.calls[0][0]).not.toMatch(/tenants|memberships|app_users/);
+  });
+
   it("loads and maps an app-user profile by Auth user id", async () => {
     const query = jest.fn().mockResolvedValue({
       rows: [
@@ -258,6 +383,52 @@ describe("AuthRepository", () => {
     );
   });
 
+  it("returns all active memberships in active tenants deterministically", async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          membership_id: "membership-a",
+          tenant_id: "tenant-a",
+          tenant_name: "Alpha Towing",
+          role: "dispatcher",
+          status: "active",
+        },
+        {
+          membership_id: "membership-b",
+          tenant_id: "tenant-b",
+          tenant_name: "Bravo Recovery",
+          role: "car_puller",
+          status: "active",
+        },
+      ],
+    });
+    const repository = new AuthRepository("postgresql://unused", {
+      connect: jest.fn(),
+      query,
+    });
+
+    await expect(
+      repository.findActiveMembershipsByUserId("auth-user-id"),
+    ).resolves.toHaveLength(2);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /tenant_memberships\.status = 'active'[\s\S]*tenants\.status = 'active'[\s\S]*ORDER BY/,
+      ),
+      ["auth-user-id"],
+    );
+  });
+
+  it("allows zero active memberships", async () => {
+    const repository = new AuthRepository("postgresql://unused", {
+      connect: jest.fn(),
+      query: jest.fn().mockResolvedValue({ rows: [] }),
+    });
+
+    await expect(
+      repository.findActiveMembershipsByUserId("auth-user-id"),
+    ).resolves.toEqual([]);
+  });
+
   it.each([
     "a suspended membership",
     "a removed membership",
@@ -293,9 +464,7 @@ describe("AuthRepository", () => {
     });
 
     await expect(
-      repository.findApplicationAccess(
-        "3d10ad51-1d6c-4dfc-9a12-38337bed3440",
-      ),
+      repository.findApplicationAccess("3d10ad51-1d6c-4dfc-9a12-38337bed3440"),
     ).resolves.toEqual({
       userId: "3d10ad51-1d6c-4dfc-9a12-38337bed3440",
       tenantId: "1aa6f7f9-e3ec-4b32-93ab-5baac785c05f",
@@ -326,9 +495,7 @@ describe("AuthRepository", () => {
     });
 
     await expect(
-      repository.findApplicationAccess(
-        "3d10ad51-1d6c-4dfc-9a12-38337bed3440",
-      ),
+      repository.findApplicationAccess("3d10ad51-1d6c-4dfc-9a12-38337bed3440"),
     ).resolves.toMatchObject({ tenantExists: false, tenantStatus: null });
   });
 
@@ -339,9 +506,7 @@ describe("AuthRepository", () => {
     });
 
     await expect(
-      repository.findApplicationAccess(
-        "3d10ad51-1d6c-4dfc-9a12-38337bed3440",
-      ),
+      repository.findApplicationAccess("3d10ad51-1d6c-4dfc-9a12-38337bed3440"),
     ).resolves.toBeNull();
   });
 });
