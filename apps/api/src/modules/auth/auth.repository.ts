@@ -1,6 +1,11 @@
 import { Injectable } from "@nestjs/common";
 import { Pool, PoolClient } from "pg";
-import { AuthRole } from "./auth.types";
+import {
+  AuthRole,
+  MembershipStatus,
+  MembershipSummary,
+  UserProfileRecord,
+} from "./auth.types";
 
 export interface CreateCompanyAccountInput {
   authUserId: string;
@@ -99,6 +104,85 @@ export class AuthRepository {
       : null;
   }
 
+  async findUserProfileById(userId: string): Promise<UserProfileRecord | null> {
+    const result = await this.pool.query<{
+      user_id: string;
+      full_name: string;
+      phone: string;
+    }>(
+      `SELECT user_id, full_name, phone
+       FROM public.user_profiles
+       WHERE user_id = $1`,
+      [userId],
+    );
+    const profile = result.rows[0];
+
+    return profile
+      ? {
+          userId: profile.user_id,
+          fullName: profile.full_name,
+          phone: profile.phone,
+        }
+      : null;
+  }
+
+  async findMembershipsByUserId(
+    userId: string,
+  ): Promise<MembershipSummary[]> {
+    const result = await this.pool.query<{
+      membership_id: string;
+      tenant_id: string;
+      tenant_name: string;
+      role: AuthRole;
+      status: MembershipStatus;
+    }>(
+      `SELECT tenant_memberships.id AS membership_id,
+              tenant_memberships.tenant_id,
+              tenants.name AS tenant_name,
+              tenant_memberships.role,
+              tenant_memberships.status
+       FROM public.tenant_memberships AS tenant_memberships
+       INNER JOIN public.tenants AS tenants
+         ON tenants.id = tenant_memberships.tenant_id
+       WHERE tenant_memberships.user_id = $1
+       ORDER BY tenants.name, tenant_memberships.tenant_id,
+                tenant_memberships.id`,
+      [userId],
+    );
+
+    return result.rows.map((membership) => this.mapMembership(membership));
+  }
+
+  async findActiveMembership(
+    userId: string,
+    tenantId: string,
+  ): Promise<MembershipSummary | null> {
+    const result = await this.pool.query<{
+      membership_id: string;
+      tenant_id: string;
+      tenant_name: string;
+      role: AuthRole;
+      status: MembershipStatus;
+    }>(
+      `SELECT tenant_memberships.id AS membership_id,
+              tenant_memberships.tenant_id,
+              tenants.name AS tenant_name,
+              tenant_memberships.role,
+              tenant_memberships.status
+       FROM public.tenant_memberships AS tenant_memberships
+       INNER JOIN public.tenants AS tenants
+         ON tenants.id = tenant_memberships.tenant_id
+       WHERE tenant_memberships.user_id = $1
+         AND tenant_memberships.tenant_id = $2
+         AND tenant_memberships.status = 'active'
+         AND tenants.status = 'active'`,
+      [userId, tenantId],
+    );
+    const membership = result.rows[0];
+
+    return membership ? this.mapMembership(membership) : null;
+  }
+
   async findApplicationAccess(
     authUserId: string,
   ): Promise<ApplicationAccess | null> {
@@ -138,5 +222,21 @@ export class AuthRepository {
     } catch {
       // Preserve the original transaction error for orchestration and mapping.
     }
+  }
+
+  private mapMembership(membership: {
+    membership_id: string;
+    tenant_id: string;
+    tenant_name: string;
+    role: AuthRole;
+    status: MembershipStatus;
+  }): MembershipSummary {
+    return {
+      membershipId: membership.membership_id,
+      tenantId: membership.tenant_id,
+      tenantName: membership.tenant_name,
+      role: membership.role,
+      status: membership.status,
+    };
   }
 }

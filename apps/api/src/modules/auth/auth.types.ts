@@ -2,6 +2,39 @@ export const AUTH_ROLES = ['admin', 'dispatcher', 'car_puller'] as const;
 
 export type AuthRole = (typeof AUTH_ROLES)[number];
 
+export const MEMBERSHIP_STATUSES = [
+  'active',
+  'suspended',
+  'removed',
+] as const;
+
+export type MembershipStatus = (typeof MEMBERSHIP_STATUSES)[number];
+
+export interface UserProfileRecord {
+  userId: string;
+  fullName: string;
+  phone: string;
+}
+
+export interface MembershipSummary {
+  membershipId: string;
+  tenantId: string;
+  tenantName: string;
+  role: AuthRole;
+  status: MembershipStatus;
+}
+
+export interface AuthenticatedIdentity {
+  userId: string;
+}
+
+export interface TenantRequestContext {
+  userId: string;
+  membershipId: string;
+  tenantId: string;
+  role: AuthRole;
+}
+
 export interface AuthenticatedContext {
   userId: string;
   tenantId: string;
