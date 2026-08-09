@@ -14,6 +14,7 @@ import { AuthRepository } from './auth.repository';
 import {
   AUTH_ROLES,
   AuthenticatedContext,
+  AuthenticatedIdentity,
   AuthRole,
 } from './auth.types';
 
@@ -39,34 +40,8 @@ export class JwtStrategy {
   }
 
   async verify(accessToken: string): Promise<AuthenticatedContext> {
-    if (typeof accessToken !== 'string' || accessToken.trim() === '') {
-      throw this.unauthorized();
-    }
+    const { userId } = await this.verifyIdentity(accessToken);
 
-    let result: Awaited<ReturnType<SupabaseClient['auth']['getClaims']>>;
-
-    try {
-      result = await this.publicClient.auth.getClaims(accessToken);
-    } catch (error) {
-      if (isAvailabilityFailure(error)) {
-        throw new ServiceUnavailableException(
-          'Authentication provider is unavailable.',
-        );
-      }
-      throw this.unauthorized();
-    }
-
-    if (result.error) {
-      if (isAvailabilityFailure(result.error)) {
-        throw new ServiceUnavailableException(
-          'Authentication provider is unavailable.',
-        );
-      }
-      throw this.unauthorized();
-    }
-
-    const claims = result.data?.claims as VerifiedClaims | undefined;
-    const userId = this.validateClaims(claims);
     let access;
 
     try {
@@ -99,6 +74,39 @@ export class JwtStrategy {
       tenantId: access.tenantId,
       role: access.role as AuthRole,
     };
+  }
+
+  async verifyIdentity(accessToken: string): Promise<AuthenticatedIdentity> {
+    if (typeof accessToken !== 'string' || accessToken.trim() === '') {
+      throw this.unauthorized();
+    }
+
+    let result: Awaited<ReturnType<SupabaseClient['auth']['getClaims']>>;
+
+    try {
+      result = await this.publicClient.auth.getClaims(accessToken);
+    } catch (error) {
+      if (isAvailabilityFailure(error)) {
+        throw new ServiceUnavailableException(
+          'Authentication provider is unavailable.',
+        );
+      }
+      throw this.unauthorized();
+    }
+
+    if (result.error) {
+      if (isAvailabilityFailure(result.error)) {
+        throw new ServiceUnavailableException(
+          'Authentication provider is unavailable.',
+        );
+      }
+      throw this.unauthorized();
+    }
+
+    const claims = result.data?.claims as VerifiedClaims | undefined;
+    const userId = this.validateClaims(claims);
+
+    return { userId };
   }
 
   private validateClaims(claims: VerifiedClaims | undefined): string {

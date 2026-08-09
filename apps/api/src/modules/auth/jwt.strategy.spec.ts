@@ -67,6 +67,67 @@ describe('JwtStrategy', () => {
     };
   }
 
+  describe('verifyIdentity', () => {
+    it('returns only the verified Supabase user ID without application access lookup', async () => {
+      const { subject, getClaims, findApplicationAccess } = createSubject();
+
+      const identity = await subject.verifyIdentity(token);
+
+      expect(identity).toEqual({ userId });
+      expect(identity).not.toHaveProperty('tenantId');
+      expect(identity).not.toHaveProperty('role');
+      expect(identity).not.toHaveProperty('membershipId');
+      expect(getClaims).toHaveBeenCalledWith(token);
+      expect(findApplicationAccess).not.toHaveBeenCalled();
+    });
+
+    it.each([undefined, '', '   '])(
+      'rejects missing token input without an application access lookup',
+      async (value) => {
+        const { subject, getClaims, findApplicationAccess } = createSubject();
+
+        await expect(
+          subject.verifyIdentity(value as string),
+        ).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(getClaims).not.toHaveBeenCalled();
+        expect(findApplicationAccess).not.toHaveBeenCalled();
+      },
+    );
+
+    it('safely rejects an invalid token without an application access lookup', async () => {
+      const { subject, findApplicationAccess } = createSubject({
+        claimsError: { status: 401, message: 'provider detail' },
+      });
+
+      await expect(subject.verifyIdentity(token)).rejects.toMatchObject({
+        message: 'Invalid authentication credentials.',
+      });
+      expect(findApplicationAccess).not.toHaveBeenCalled();
+    });
+
+    it('safely rejects a provider verification failure without an application access lookup', async () => {
+      const { subject, findApplicationAccess } = createSubject({
+        claimsFailure: new Error('provider detail'),
+      });
+
+      await expect(subject.verifyIdentity(token)).rejects.toMatchObject({
+        message: 'Invalid authentication credentials.',
+      });
+      expect(findApplicationAccess).not.toHaveBeenCalled();
+    });
+
+    it('rejects a missing authenticated subject without an application access lookup', async () => {
+      const { subject, findApplicationAccess } = createSubject({
+        claimOverrides: { sub: undefined },
+      });
+
+      await expect(subject.verifyIdentity(token)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(findApplicationAccess).not.toHaveBeenCalled();
+    });
+  });
+
   it.each(['admin', 'dispatcher', 'car_puller'])(
     'verifies a token and returns database-derived %s access',
     async (role) => {
