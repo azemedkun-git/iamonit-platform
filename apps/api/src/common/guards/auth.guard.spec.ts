@@ -6,24 +6,23 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtStrategy } from '../../modules/auth/jwt.strategy';
-import { AuthenticatedContext } from '../../modules/auth/auth.types';
+import { AuthenticatedIdentity } from '../../modules/auth/auth.types';
 import { AuthGuard } from './auth.guard';
 
 describe('AuthGuard', () => {
   const token = 'sensitive-access-token';
-  const authenticatedContext: AuthenticatedContext = {
+  const authenticatedIdentity: AuthenticatedIdentity = {
     userId: '3d10ad51-1d6c-4dfc-9a12-38337bed3440',
-    tenantId: '1aa6f7f9-e3ec-4b32-93ab-5baac785c05f',
-    role: 'dispatcher',
   };
 
   function createSubject(authorization?: unknown) {
     const request: {
       headers: { authorization?: unknown };
-      user?: AuthenticatedContext;
+      user?: AuthenticatedIdentity;
     } = { headers: { authorization } };
-    const verify = jest.fn<Promise<AuthenticatedContext>, [string]>();
-    const verifier = { verify } as unknown as JwtStrategy;
+    const verifyIdentity = jest.fn<Promise<AuthenticatedIdentity>, [string]>();
+    const verify = jest.fn();
+    const verifier = { verifyIdentity, verify } as unknown as JwtStrategy;
     const executionContext = {
       switchToHttp: () => ({ getRequest: () => request }),
     } as unknown as ExecutionContext;
@@ -32,6 +31,7 @@ describe('AuthGuard', () => {
       guard: new AuthGuard(verifier),
       executionContext,
       request,
+      verifyIdentity,
       verify,
     };
   }
@@ -39,21 +39,21 @@ describe('AuthGuard', () => {
   it.each(['Bearer', 'bearer', 'BEARER'])(
     'passes one token for the case-insensitive %s scheme and populates request.user',
     async (scheme) => {
-      const { guard, executionContext, request, verify } = createSubject(
-        `${scheme} ${token}`,
-      );
-      verify.mockResolvedValue(authenticatedContext);
+      const { guard, executionContext, request, verifyIdentity, verify } =
+        createSubject(`${scheme} ${token}`);
+      verifyIdentity.mockResolvedValue(authenticatedIdentity);
 
       await expect(guard.canActivate(executionContext)).resolves.toBe(true);
 
-      expect(verify).toHaveBeenCalledTimes(1);
-      expect(verify).toHaveBeenCalledWith(token);
-      expect(request.user).toBe(authenticatedContext);
+      expect(verifyIdentity).toHaveBeenCalledTimes(1);
+      expect(verifyIdentity).toHaveBeenCalledWith(token);
       expect(request.user).toEqual({
-        userId: authenticatedContext.userId,
-        tenantId: authenticatedContext.tenantId,
-        role: authenticatedContext.role,
+        userId: authenticatedIdentity.userId,
       });
+      expect(request.user).not.toHaveProperty('tenantId');
+      expect(request.user).not.toHaveProperty('membershipId');
+      expect(request.user).not.toHaveProperty('role');
+      expect(verify).not.toHaveBeenCalled();
     },
   );
 
@@ -71,7 +71,7 @@ describe('AuthGuard', () => {
     ['multiple credentials separated by comma', `Bearer ${token},Bearer second`],
     ['multiple credentials separated by whitespace', `Bearer ${token} second`],
   ])('rejects %s with a safe 401', async (_name, authorization) => {
-    const { guard, executionContext, request, verify } =
+    const { guard, executionContext, request, verifyIdentity } =
       createSubject(authorization);
 
     const error = await guard
@@ -80,7 +80,7 @@ describe('AuthGuard', () => {
 
     expect(error).toBeInstanceOf(UnauthorizedException);
     expect(JSON.stringify(error)).not.toContain(token);
-    expect(verify).not.toHaveBeenCalled();
+    expect(verifyIdentity).not.toHaveBeenCalled();
     expect(request.user).toBeUndefined();
   });
 
@@ -94,13 +94,13 @@ describe('AuthGuard', () => {
       'Authentication provider is unavailable.',
     ),
   ])('propagates verifier exceptions unchanged', async (error) => {
-    const { guard, executionContext, request, verify } = createSubject(
+    const { guard, executionContext, request, verifyIdentity } = createSubject(
       `Bearer ${token}`,
     );
-    verify.mockRejectedValue(error);
+    verifyIdentity.mockRejectedValue(error);
 
     await expect(guard.canActivate(executionContext)).rejects.toBe(error);
-    expect(verify).toHaveBeenCalledTimes(1);
+    expect(verifyIdentity).toHaveBeenCalledTimes(1);
     expect(request.user).toBeUndefined();
   });
 
@@ -121,7 +121,8 @@ describe('AuthGuard', () => {
       jest.spyOn(console, 'error').mockImplementation(),
       jest.spyOn(console, 'warn').mockImplementation(),
     ];
-    const { guard, executionContext, verify } = createSubject(authorization);
+    const { guard, executionContext, verifyIdentity } =
+      createSubject(authorization);
 
     const error = await guard
       .canActivate(executionContext)
@@ -132,7 +133,7 @@ describe('AuthGuard', () => {
     for (const value of sensitive) {
       expect(serialized).not.toContain(value);
     }
-    expect(verify).not.toHaveBeenCalled();
+    expect(verifyIdentity).not.toHaveBeenCalled();
     for (const spy of consoleSpies) {
       expect(spy).not.toHaveBeenCalled();
       spy.mockRestore();

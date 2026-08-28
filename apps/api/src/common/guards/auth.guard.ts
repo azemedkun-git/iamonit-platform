@@ -5,13 +5,13 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtStrategy } from '../../modules/auth/jwt.strategy';
-import { AuthenticatedContext } from '../../modules/auth/auth.types';
+import { AuthenticatedIdentity } from '../../modules/auth/auth.types';
 
 interface AuthenticatedRequest {
   headers: {
     authorization?: unknown;
   };
-  user?: AuthenticatedContext;
+  user?: AuthenticatedIdentity;
 }
 
 @Injectable()
@@ -21,9 +21,9 @@ export class AuthGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const accessToken = this.extractAccessToken(request.headers.authorization);
-    const authenticatedContext = await this.tokenVerifier.verify(accessToken);
+    const identity = await this.tokenVerifier.verifyIdentity(accessToken);
 
-    request.user = authenticatedContext;
+    request.user = { userId: identity.userId };
     return true;
   }
 

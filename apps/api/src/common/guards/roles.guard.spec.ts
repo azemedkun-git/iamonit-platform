@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { ROLES_KEY, Roles } from '../decorators/roles.decorator';
-import { AuthenticatedContext, AuthRole } from '../../modules/auth/auth.types';
+import { AuthRole, TenantRequestContext } from '../../modules/auth/auth.types';
 import { RolesGuard } from './roles.guard';
 
 describe('Roles', () => {
@@ -65,9 +65,10 @@ describe('RolesGuard', () => {
     };
   }
 
-  function authenticatedUser(role: AuthRole): AuthenticatedContext {
+  function authenticatedUser(role: AuthRole): TenantRequestContext {
     return {
       userId: '3d10ad51-1d6c-4dfc-9a12-38337bed3440',
+      membershipId: '2aa6f7f9-e3ec-4b32-93ab-5baac785c05f',
       tenantId: '1aa6f7f9-e3ec-4b32-93ab-5baac785c05f',
       role,
     };
@@ -133,6 +134,10 @@ describe('RolesGuard', () => {
   it.each([
     ['missing user', undefined],
     ['missing userId', { tenantId: 'tenant-id', role: 'admin' }],
+    [
+      'missing membershipId',
+      { userId: 'user-id', tenantId: 'tenant-id', role: 'admin' },
+    ],
     ['missing tenantId', { userId: 'user-id', role: 'admin' }],
     [
       'unsupported role',
