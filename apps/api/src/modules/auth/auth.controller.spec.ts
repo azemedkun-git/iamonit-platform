@@ -6,11 +6,16 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from "@nestjs/common";
-import { HTTP_CODE_METADATA } from "@nestjs/common/constants";
+import {
+  HTTP_CODE_METADATA,
+  PATH_METADATA,
+} from "@nestjs/common/constants";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
-import { AuthResponse } from "./auth.types";
+import { AuthResponse, MultiTenantAuthResponse } from "./auth.types";
 import { LoginDto } from "./dto/login.dto";
+import { RegisterCarPullerDto } from "./dto/register-car-puller.dto";
+import { RegisterTransporterDto } from "./dto/register-transporter.dto";
 import { RegisterDto } from "./dto/register.dto";
 
 describe("AuthController", () => {
@@ -33,16 +38,50 @@ describe("AuthController", () => {
     },
   };
 
+  const multiTenantResponse: MultiTenantAuthResponse = {
+    session: response.session,
+    requiresEmailConfirmation: false,
+    profile: {
+      userId: "user-id",
+      email: "user@example.com",
+      fullName: "Casey Carrier",
+      phone: "+13125550101",
+    },
+    memberships: [
+      {
+        membershipId: "membership-id",
+        tenantId: "tenant-id",
+        tenantName: "Acme Transport",
+        role: "admin",
+        status: "active",
+      },
+    ],
+    selectedMembership: null,
+  };
+
   let controller: AuthController;
   let register: jest.MockedFunction<AuthService["register"]>;
+  let registerTransporter: jest.MockedFunction<
+    AuthService["registerTransporter"]
+  >;
+  let registerCarPuller: jest.MockedFunction<
+    AuthService["registerCarPuller"]
+  >;
   let login: jest.MockedFunction<AuthService["login"]>;
+  let loginMultiTenant: jest.MockedFunction<AuthService["loginMultiTenant"]>;
 
   beforeEach(() => {
     register = jest.fn();
+    registerTransporter = jest.fn();
+    registerCarPuller = jest.fn();
     login = jest.fn();
+    loginMultiTenant = jest.fn();
     controller = new AuthController({
       register,
+      registerTransporter,
+      registerCarPuller,
       login,
+      loginMultiTenant,
     } as unknown as AuthService);
   });
 
@@ -67,6 +106,41 @@ describe("AuthController", () => {
     );
   });
 
+  it("delegates transporter registration without introducing a client role", async () => {
+    const input: RegisterTransporterDto = {
+      email: "transporter@example.com",
+      password: "secret-password",
+      companyName: "Acme Transport",
+      fullName: "Casey Carrier",
+      phone: "+13125550101",
+    };
+    registerTransporter.mockResolvedValue(multiTenantResponse);
+
+    await expect(controller.registerTransporter(input)).resolves.toBe(
+      multiTenantResponse,
+    );
+    expect(registerTransporter).toHaveBeenCalledTimes(1);
+    expect(registerTransporter).toHaveBeenCalledWith(input);
+    expect(input).not.toHaveProperty("role");
+  });
+
+  it("delegates car-puller registration without requiring a company name", async () => {
+    const input: RegisterCarPullerDto = {
+      email: "puller@example.com",
+      password: "secret-password",
+      fullName: "Pat Puller",
+      phone: "+13125550102",
+    };
+    registerCarPuller.mockResolvedValue(multiTenantResponse);
+
+    await expect(controller.registerCarPuller(input)).resolves.toBe(
+      multiTenantResponse,
+    );
+    expect(registerCarPuller).toHaveBeenCalledTimes(1);
+    expect(registerCarPuller).toHaveBeenCalledWith(input);
+    expect(input).not.toHaveProperty("companyName");
+  });
+
   it("delegates login DTOs and forwards the service response", async () => {
     const input: LoginDto = {
       email: "admin@example.com",
@@ -84,6 +158,36 @@ describe("AuthController", () => {
       HttpStatus.OK,
     );
   });
+
+  it("delegates multi-tenant login DTOs and forwards the service response", async () => {
+    const input: LoginDto = {
+      email: "user@example.com",
+      password: "secret-password",
+    };
+    loginMultiTenant.mockResolvedValue(multiTenantResponse);
+
+    await expect(controller.loginMultiTenant(input)).resolves.toBe(
+      multiTenantResponse,
+    );
+    expect(loginMultiTenant).toHaveBeenCalledTimes(1);
+    expect(loginMultiTenant).toHaveBeenCalledWith(input);
+  });
+
+  it.each([
+    ["register", "register", HttpStatus.CREATED],
+    ["registerTransporter", "register/transporter", HttpStatus.CREATED],
+    ["registerCarPuller", "register/car-puller", HttpStatus.CREATED],
+    ["login", "login", HttpStatus.OK],
+    ["loginMultiTenant", "login/multi-tenant", HttpStatus.OK],
+  ] as const)(
+    "declares the %s route as %s with status %s",
+    (methodName, path, status) => {
+      const method = controller[methodName];
+
+      expect(Reflect.getMetadata(PATH_METADATA, method)).toBe(path);
+      expect(Reflect.getMetadata(HTTP_CODE_METADATA, method)).toBe(status);
+    },
+  );
 
   it.each([
     new ConflictException("An account with this email already exists."),
