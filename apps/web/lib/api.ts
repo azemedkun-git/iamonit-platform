@@ -1,8 +1,10 @@
 import type {
-  AuthResponse,
   AuthRole,
   LoginRequest,
-  RegisterRequest,
+  MembershipStatus,
+  MultiTenantAuthResponse,
+  RegisterCarPullerRequest,
+  RegisterTransporterRequest,
 } from './auth.types';
 
 const CONFIGURATION_ERROR = 'The service is not configured.';
@@ -11,26 +13,13 @@ const RESPONSE_ERROR = 'The service returned an unexpected response.';
 
 const SAFE_HTTP_MESSAGES = new Map<number, ReadonlySet<string>>([
   [401, new Set(['Invalid email or password.'])],
-  [403, new Set(['Account access is not configured.'])],
-  [409, new Set([
-    'An account with this email already exists.',
-    'A company with this name already exists.',
-  ])],
-  [500, new Set([
-    'Registration could not be completed.',
-    'Login could not be completed.',
-  ])],
-  [503, new Set([
-    'Authentication provider is unavailable.',
-    'Database is unavailable.',
-  ])],
+  [409, new Set(['An account with this email already exists.'])],
+  [500, new Set(['Registration could not be completed.', 'Login could not be completed.'])],
+  [503, new Set(['Authentication provider is unavailable.', 'Database is unavailable.'])],
 ]);
 
-const AUTH_ROLES: readonly AuthRole[] = [
-  'admin',
-  'dispatcher',
-  'car_puller',
-];
+const AUTH_ROLES: readonly AuthRole[] = ['admin', 'dispatcher', 'car_puller'];
+const MEMBERSHIP_STATUSES: readonly MembershipStatus[] = ['active', 'suspended', 'removed'];
 
 export class ApiError extends Error {
   readonly status: number;
@@ -42,190 +31,97 @@ export class ApiError extends Error {
   }
 }
 
-export interface AuthRequestOptions {
-  accessToken?: string;
-}
-
 export function normalizeApiBaseUrl(configuredUrl: string | undefined): string {
-  if (!configuredUrl) {
-    throw new ApiError(0, CONFIGURATION_ERROR);
-  }
-
+  if (!configuredUrl) throw new ApiError(0, CONFIGURATION_ERROR);
   let url: URL;
-  try {
-    url = new URL(configuredUrl);
-  } catch {
+  try { url = new URL(configuredUrl); } catch { throw new ApiError(0, CONFIGURATION_ERROR); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
     throw new ApiError(0, CONFIGURATION_ERROR);
   }
-
-  if (
-    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
-    url.username !== '' ||
-    url.password !== '' ||
-    url.search !== '' ||
-    url.hash !== ''
-  ) {
-    throw new ApiError(0, CONFIGURATION_ERROR);
-  }
-
   return url.toString().replace(/\/+$/, '');
 }
 
-export function register(
-  input: RegisterRequest,
-  options?: AuthRequestOptions,
-): Promise<AuthResponse> {
-  return requestAuth('/auth/register', input, options);
+export function registerTransporter(input: RegisterTransporterRequest): Promise<MultiTenantAuthResponse> {
+  return requestAuth('/auth/register/transporter', input);
 }
 
-export function login(
-  input: LoginRequest,
-  options?: AuthRequestOptions,
-): Promise<AuthResponse> {
-  return requestAuth('/auth/login', input, options);
+export function registerCarPuller(input: RegisterCarPullerRequest): Promise<MultiTenantAuthResponse> {
+  return requestAuth('/auth/register/car-puller', input);
+}
+
+export function loginMultiTenant(input: LoginRequest): Promise<MultiTenantAuthResponse> {
+  return requestAuth('/auth/login/multi-tenant', input);
 }
 
 async function requestAuth(
-  path: '/auth/register' | '/auth/login',
-  body: RegisterRequest | LoginRequest,
-  options?: AuthRequestOptions,
-): Promise<AuthResponse> {
+  path: '/auth/register/transporter' | '/auth/register/car-puller' | '/auth/login/multi-tenant',
+  body: RegisterTransporterRequest | RegisterCarPullerRequest | LoginRequest,
+): Promise<MultiTenantAuthResponse> {
   const baseUrl = normalizeApiBaseUrl(process.env.NEXT_PUBLIC_API_URL);
-  const headers = new Headers({ 'Content-Type': 'application/json' });
-
-  if (options?.accessToken) {
-    headers.set('Authorization', `Bearer ${options.accessToken}`);
-  }
-
   let response: Response;
   try {
     response = await fetch(`${baseUrl}${path}`, {
       method: 'POST',
-      headers,
+      headers: new Headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
-  } catch {
-    throw new ApiError(0, REQUEST_ERROR);
-  }
-
-  if (!isJsonResponse(response)) {
+  } catch { throw new ApiError(0, REQUEST_ERROR); }
+  if (!response.headers.get('content-type')?.toLowerCase().includes('application/json')) {
     throw new ApiError(response.status, RESPONSE_ERROR);
   }
-
   let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    throw new ApiError(response.status, RESPONSE_ERROR);
-  }
-
-  if (!response.ok) {
-    throw safeHttpError(response.status, payload);
-  }
-
-  if (!isAuthResponse(payload)) {
-    throw new ApiError(response.status, RESPONSE_ERROR);
-  }
-
+  try { payload = await response.json(); } catch { throw new ApiError(response.status, RESPONSE_ERROR); }
+  if (!response.ok) throw safeHttpError(response.status, payload);
+  if (!isMultiTenantAuthResponse(payload)) throw new ApiError(response.status, RESPONSE_ERROR);
   return payload;
 }
 
 function safeHttpError(status: number, payload: unknown): ApiError {
-  if (!isPlainObject(payload) || !hasOnlyErrorKeys(payload)) {
+  if (!isPlainObject(payload) || !Object.keys(payload).every((key) => ['statusCode', 'message', 'error'].includes(key))) {
     return new ApiError(status, REQUEST_ERROR);
   }
-
-  const message = payload.message;
-  const approvedMessages = SAFE_HTTP_MESSAGES.get(status);
-  return new ApiError(
-    status,
-    typeof message === 'string' && approvedMessages?.has(message)
-      ? message
-      : REQUEST_ERROR,
-  );
+  const approved = SAFE_HTTP_MESSAGES.get(status);
+  return new ApiError(status, typeof payload.message === 'string' && approved?.has(payload.message) ? payload.message : REQUEST_ERROR);
 }
 
-function hasOnlyErrorKeys(value: Record<string, unknown>): boolean {
-  const approvedKeys = new Set(['statusCode', 'message', 'error']);
-  return Object.keys(value).every((key) => approvedKeys.has(key));
+function isMultiTenantAuthResponse(value: unknown): value is MultiTenantAuthResponse {
+  if (!isPlainObject(value) || !hasExactKeys(value, ['session', 'requiresEmailConfirmation', 'profile', 'memberships', 'selectedMembership'])) return false;
+  if (typeof value.requiresEmailConfirmation !== 'boolean' || !isProfile(value.profile) || !Array.isArray(value.memberships) || !value.memberships.every(isMembership)) return false;
+  if (value.session !== null && !isSession(value.session)) return false;
+  if (value.selectedMembership === null) return true;
+  if (!isMembership(value.selectedMembership)) return false;
+  const selectedMembership = value.selectedMembership;
+  return value.memberships.some((membership) => sameMembership(membership, selectedMembership));
 }
 
-function isJsonResponse(response: Response): boolean {
-  const contentType = response.headers.get('content-type');
-  return contentType?.toLowerCase().includes('application/json') ?? false;
+function isSession(value: unknown): boolean {
+  return isPlainObject(value) && hasExactKeys(value, ['accessToken', 'refreshToken', 'expiresIn', 'expiresAt', 'tokenType']) &&
+    typeof value.accessToken === 'string' && typeof value.refreshToken === 'string' &&
+    typeof value.expiresIn === 'number' && Number.isFinite(value.expiresIn) &&
+    typeof value.expiresAt === 'number' && Number.isFinite(value.expiresAt) && typeof value.tokenType === 'string';
 }
 
-function isAuthResponse(value: unknown): value is AuthResponse {
-  if (!isPlainObject(value)) {
-    return false;
-  }
-
-  return (
-    hasExactKeys(value, ['session', 'requiresEmailConfirmation', 'user']) &&
-    typeof value.requiresEmailConfirmation === 'boolean' &&
-    isAuthUser(value.user) &&
-    (value.session === null || isAuthSession(value.session))
-  );
+function isProfile(value: unknown): boolean {
+  return isPlainObject(value) && hasExactKeys(value, ['userId', 'email', 'fullName', 'phone']) &&
+    Object.values(value).every((item) => typeof item === 'string');
 }
 
-function isAuthSession(value: unknown): boolean {
-  return (
-    isPlainObject(value) &&
-    hasExactKeys(value, [
-      'accessToken',
-      'refreshToken',
-      'expiresIn',
-      'expiresAt',
-      'tokenType',
-    ]) &&
-    isString(value.accessToken) &&
-    isString(value.refreshToken) &&
-    isFiniteNumber(value.expiresIn) &&
-    isFiniteNumber(value.expiresAt) &&
-    isString(value.tokenType)
-  );
+function isMembership(value: unknown): value is MultiTenantAuthResponse['memberships'][number] {
+  return isPlainObject(value) && hasExactKeys(value, ['membershipId', 'tenantId', 'tenantName', 'role', 'status']) &&
+    typeof value.membershipId === 'string' && typeof value.tenantId === 'string' && typeof value.tenantName === 'string' &&
+    typeof value.role === 'string' && AUTH_ROLES.includes(value.role as AuthRole) &&
+    typeof value.status === 'string' && MEMBERSHIP_STATUSES.includes(value.status as MembershipStatus);
 }
 
-function isAuthUser(value: unknown): boolean {
-  return (
-    isPlainObject(value) &&
-    hasExactKeys(value, [
-      'id',
-      'email',
-      'tenantId',
-      'role',
-      'fullName',
-      'phone',
-    ]) &&
-    isString(value.id) &&
-    isString(value.email) &&
-    isString(value.tenantId) &&
-    typeof value.role === 'string' &&
-    AUTH_ROLES.includes(value.role as AuthRole) &&
-    isString(value.fullName) &&
-    isString(value.phone)
-  );
+function sameMembership(left: MultiTenantAuthResponse['memberships'][number], right: MultiTenantAuthResponse['memberships'][number]): boolean {
+  return left.membershipId === right.membershipId && left.tenantId === right.tenantId && left.tenantName === right.tenantName && left.role === right.role && left.status === right.status;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function hasExactKeys(
-  value: Record<string, unknown>,
-  expectedKeys: readonly string[],
-): boolean {
-  const actualKeys = Object.keys(value);
-  return (
-    actualKeys.length === expectedKeys.length &&
-    expectedKeys.every((key) => Object.hasOwn(value, key))
-  );
-}
-
-function isString(value: unknown): value is string {
-  return typeof value === 'string';
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 }

@@ -1,9 +1,18 @@
 export type AuthRole = 'admin' | 'dispatcher' | 'car_puller';
 
-export interface RegisterRequest {
+export type MembershipStatus = 'active' | 'suspended' | 'removed';
+
+export interface RegisterTransporterRequest {
   email: string;
   password: string;
   companyName: string;
+  fullName: string;
+  phone: string;
+}
+
+export interface RegisterCarPullerRequest {
+  email: string;
+  password: string;
   fullName: string;
   phone: string;
 }
@@ -21,17 +30,25 @@ export interface AuthSession {
   tokenType: string;
 }
 
-export interface AuthUserContext {
-  id: string;
+export interface UserProfile {
+  userId: string;
   email: string;
-  tenantId: string;
-  role: AuthRole;
   fullName: string;
   phone: string;
 }
 
-export interface AuthResponse {
+export interface MembershipSummary {
+  membershipId: string;
+  tenantId: string;
+  tenantName: string;
+  role: AuthRole;
+  status: MembershipStatus;
+}
+
+export interface MultiTenantAuthResponse {
   session: AuthSession | null;
   requiresEmailConfirmation: boolean;
-  user: AuthUserContext;
+  profile: UserProfile;
+  memberships: MembershipSummary[];
+  selectedMembership: MembershipSummary | null;
 }

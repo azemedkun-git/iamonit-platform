@@ -1,0 +1,12 @@
+import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import Page from './page';
+const mocks = vi.hoisted(() => ({ register: vi.fn(), establish: vi.fn(), clear: vi.fn(), replace: vi.fn() }));
+vi.mock('../../../../lib/api', () => ({ registerCarPuller: mocks.register })); vi.mock('../../../../lib/auth', () => ({ establishAuthSession: mocks.establish, clearCurrentAuthState: mocks.clear })); vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: mocks.replace }) }));
+const response = { session: { accessToken: 'a', refreshToken: 'r', expiresIn: 1, expiresAt: 2, tokenType: 'bearer' }, requiresEmailConfirmation: false, profile: { userId: 'u', email: 'person@example.test', fullName: 'Person', phone: '+14694681177' }, memberships: [], selectedMembership: null };
+async function submit() { const user = userEvent.setup(); for (const [label, value] of [['Full name','Person'],['Email address','person@example.test'],['Phone number','+14694681177'],['Password','password1'],['Confirm password','password1']]) await user.type(screen.getByLabelText(label), value); await user.click(screen.getByRole('button', { name: 'Create account' })); }
+describe('CarPullerRegistrationPage', () => { afterEach(cleanup); beforeEach(() => { Object.values(mocks).forEach((mock) => mock.mockReset()); mocks.register.mockResolvedValue(response); mocks.establish.mockResolvedValue(undefined); });
+  it('has neither company nor role and accepts zero memberships', async () => { render(<Page />); expect(screen.queryByLabelText(/company/i)).not.toBeInTheDocument(); expect(screen.queryByLabelText(/role/i)).not.toBeInTheDocument(); await submit(); expect(mocks.register).toHaveBeenCalledWith({ email: 'person@example.test', password: 'password1', fullName: 'Person', phone: '+14694681177' }); expect(mocks.register.mock.calls[0][0]).not.toHaveProperty('confirmPassword'); expect(mocks.establish).toHaveBeenCalledWith(response); expect(mocks.replace).toHaveBeenCalledWith('/'); });
+  it('shows confirmation guidance without installing a session', async () => { mocks.register.mockResolvedValue({ ...response, session: null, requiresEmailConfirmation: true }); render(<Page />); await submit(); expect(await screen.findByRole('status')).toHaveTextContent('Check your email'); expect(mocks.clear).toHaveBeenCalled(); expect(mocks.establish).not.toHaveBeenCalled(); });
+});

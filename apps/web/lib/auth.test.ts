@@ -1,60 +1,35 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AuthResponse } from './auth.types';
-
+import type { MultiTenantAuthResponse } from './auth.types';
 const setSession = vi.fn();
-vi.mock('./supabase', () => ({
-  getBrowserSupabaseClient: () => ({ auth: { setSession } }),
-}));
+vi.mock('./supabase', () => ({ getBrowserSupabaseClient: () => ({ auth: { setSession } }) }));
+import { clearCurrentAuthState, establishAuthSession, getCurrentAuthState, selectMembership } from './auth';
 
-import {
-  clearCurrentAuthUser,
-  establishAuthSession,
-  getCurrentAuthUser,
-} from './auth';
-
-const response: AuthResponse = {
-  session: {
-    accessToken: 'access-value',
-    refreshToken: 'refresh-value',
-    expiresIn: 3600,
-    expiresAt: 2_000_000_000,
-    tokenType: 'bearer',
-  },
-  requiresEmailConfirmation: false,
-  user: {
-    id: 'user-id', email: 'admin@example.test', tenantId: 'tenant-id',
-    role: 'admin', fullName: 'Example Admin', phone: '555-0100',
-  },
+const memberships = [
+  { membershipId: 'one', tenantId: 'tenant-one', tenantName: 'One', role: 'admin' as const, status: 'active' as const },
+  { membershipId: 'two', tenantId: 'tenant-two', tenantName: 'Two', role: 'dispatcher' as const, status: 'active' as const },
+];
+const response: MultiTenantAuthResponse = {
+  session: { accessToken: 'access', refreshToken: 'refresh', expiresIn: 1, expiresAt: 2, tokenType: 'bearer' }, requiresEmailConfirmation: false,
+  profile: { userId: 'user', email: 'person@example.test', fullName: 'Person', phone: '+14694681177' }, memberships, selectedMembership: null,
 };
 
-describe('authentication session helpers', () => {
-  beforeEach(() => {
-    clearCurrentAuthUser();
-    setSession.mockReset();
-    setSession.mockResolvedValue({ error: null });
-  });
-
-  it('installs the Supabase session and retains display user context in memory', async () => {
+describe('authentication state', () => {
+  beforeEach(() => { clearCurrentAuthState(); setSession.mockReset(); setSession.mockResolvedValue({ error: null }); });
+  it('installs Supabase session and retains multi-tenant context', async () => {
     await establishAuthSession(response);
-    expect(setSession).toHaveBeenCalledWith({
-      access_token: 'access-value', refresh_token: 'refresh-value',
-    });
-    expect(getCurrentAuthUser()).toEqual(response.user);
+    expect(setSession).toHaveBeenCalledWith({ access_token: 'access', refresh_token: 'refresh' });
+    expect(getCurrentAuthState()).toEqual({ profile: response.profile, memberships, selectedMembership: null });
   });
-
-  it('rejects a null session without retaining user context', async () => {
-    await expect(establishAuthSession({ ...response, session: null })).rejects.toThrow(
-      'Authentication could not be completed. Please try again.',
-    );
-    expect(setSession).not.toHaveBeenCalled();
-    expect(getCurrentAuthUser()).toBeNull();
+  it('selects only the exact returned membership object', async () => {
+    await establishAuthSession(response);
+    expect(selectMembership({ ...memberships[0] })).toBe(false);
+    expect(selectMembership(memberships[1])).toBe(true);
+    expect(getCurrentAuthState()?.selectedMembership).toBe(memberships[1]);
   });
-
-  it('clears partial state and returns a safe error when installation fails', async () => {
+  it('rejects null sessions and clears state on installation failure', async () => {
+    await expect(establishAuthSession({ ...response, session: null })).rejects.toThrow('Authentication could not be completed.');
     setSession.mockResolvedValue({ error: new Error('provider detail') });
-    await expect(establishAuthSession(response)).rejects.toThrow(
-      'Authentication could not be completed. Please try again.',
-    );
-    expect(getCurrentAuthUser()).toBeNull();
+    await expect(establishAuthSession(response)).rejects.toThrow('Authentication could not be completed.');
+    expect(getCurrentAuthState()).toBeNull();
   });
 });
