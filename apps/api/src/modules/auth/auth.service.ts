@@ -18,6 +18,8 @@ import {
 import { AuthRepository } from "./auth.repository";
 import {
   AUTH_ROLES,
+  AuthBootstrapResponse,
+  AuthenticatedIdentity,
   AuthResponse,
   AuthSession,
   MembershipSummary,
@@ -317,6 +319,46 @@ export class AuthService {
     };
   }
 
+  async getCurrentUser(
+    identity: AuthenticatedIdentity,
+  ): Promise<AuthBootstrapResponse> {
+    let profile;
+    let memberships: MembershipSummary[];
+
+    try {
+      profile = await this.repository.findBootstrapProfileByUserId(
+        identity.userId,
+      );
+      memberships = await this.repository.findActiveMembershipsByUserId(
+        identity.userId,
+      );
+    } catch (error) {
+      throw this.mapBootstrapDatabaseError(error);
+    }
+
+    if (!profile) {
+      throw new ForbiddenException("Account access is not configured.");
+    }
+
+    if (
+      profile.userId !== identity.userId ||
+      !profile.email ||
+      !profile.fullName ||
+      !profile.phone ||
+      memberships.some((membership) => !isValidActiveMembership(membership))
+    ) {
+      throw new InternalServerErrorException(
+        "Account bootstrap could not be completed.",
+      );
+    }
+
+    return {
+      profile,
+      memberships,
+      selectedMembership: memberships.length === 1 ? memberships[0] : null,
+    };
+  }
+
   private async signUp(email: string, password: string) {
     let authResult;
 
@@ -433,6 +475,16 @@ export class AuthService {
     }
 
     return new InternalServerErrorException("Login could not be completed.");
+  }
+
+  private mapBootstrapDatabaseError(error: unknown): Error {
+    if (isUnavailableError(error)) {
+      return new ServiceUnavailableException("Database is unavailable.");
+    }
+
+    return new InternalServerErrorException(
+      "Account bootstrap could not be completed.",
+    );
   }
 }
 

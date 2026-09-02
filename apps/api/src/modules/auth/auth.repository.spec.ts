@@ -260,6 +260,62 @@ describe("AuthRepository", () => {
     ).resolves.toBeNull();
   });
 
+  it("loads exact bootstrap identity fields from user_profiles and auth.users", async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [
+        {
+          user_id: "auth-user-id",
+          email: "ada@example.com",
+          full_name: "Ada Admin",
+          phone: "+13125550100",
+          raw_user_meta_data: { ignored: true },
+        },
+      ],
+    });
+    const repository = new AuthRepository("postgresql://unused", {
+      connect: jest.fn(),
+      query,
+    });
+
+    await expect(
+      repository.findBootstrapProfileByUserId("auth-user-id"),
+    ).resolves.toEqual({
+      userId: "auth-user-id",
+      email: "ada@example.com",
+      fullName: "Ada Admin",
+      phone: "+13125550100",
+    });
+    const [sql, parameters] = query.mock.calls[0];
+    expect(sql).toContain("FROM public.user_profiles AS user_profiles");
+    expect(sql).toContain("INNER JOIN auth.users AS auth_users");
+    expect(sql).toContain("WHERE user_profiles.user_id = $1");
+    expect(sql).not.toContain("app_users");
+    expect(parameters).toEqual(["auth-user-id"]);
+  });
+
+  it("returns null when the bootstrap profile is missing", async () => {
+    const repository = new AuthRepository("postgresql://unused", {
+      connect: jest.fn(),
+      query: jest.fn().mockResolvedValue({ rows: [] }),
+    });
+
+    await expect(
+      repository.findBootstrapProfileByUserId("missing-user-id"),
+    ).resolves.toBeNull();
+  });
+
+  it("propagates bootstrap profile query failures for safe service mapping", async () => {
+    const failure = new Error("database internals");
+    const repository = new AuthRepository("postgresql://unused", {
+      connect: jest.fn(),
+      query: jest.fn().mockRejectedValue(failure),
+    });
+
+    await expect(
+      repository.findBootstrapProfileByUserId("auth-user-id"),
+    ).rejects.toBe(failure);
+  });
+
   it("returns an empty list when the user has no memberships", async () => {
     const repository = new AuthRepository("postgresql://unused", {
       connect: jest.fn(),

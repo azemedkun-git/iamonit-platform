@@ -3,13 +3,19 @@ import {
   ForbiddenException,
   HttpStatus,
   InternalServerErrorException,
+  RequestMethod,
   ServiceUnavailableException,
   UnauthorizedException,
 } from "@nestjs/common";
 import {
+  GUARDS_METADATA,
   HTTP_CODE_METADATA,
+  METHOD_METADATA,
   PATH_METADATA,
 } from "@nestjs/common/constants";
+import { AuthGuard } from "../../common/guards/auth.guard";
+import { RolesGuard } from "../../common/guards/roles.guard";
+import { TenantContextGuard } from "../../common/guards/tenant-context.guard";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
 import { AuthResponse, MultiTenantAuthResponse } from "./auth.types";
@@ -69,6 +75,7 @@ describe("AuthController", () => {
   >;
   let login: jest.MockedFunction<AuthService["login"]>;
   let loginMultiTenant: jest.MockedFunction<AuthService["loginMultiTenant"]>;
+  let getCurrentUser: jest.MockedFunction<AuthService["getCurrentUser"]>;
 
   beforeEach(() => {
     register = jest.fn();
@@ -76,12 +83,14 @@ describe("AuthController", () => {
     registerCarPuller = jest.fn();
     login = jest.fn();
     loginMultiTenant = jest.fn();
+    getCurrentUser = jest.fn();
     controller = new AuthController({
       register,
       registerTransporter,
       registerCarPuller,
       login,
       loginMultiTenant,
+      getCurrentUser,
     } as unknown as AuthService);
   });
 
@@ -179,6 +188,7 @@ describe("AuthController", () => {
     ["registerCarPuller", "register/car-puller", HttpStatus.CREATED],
     ["login", "login", HttpStatus.OK],
     ["loginMultiTenant", "login/multi-tenant", HttpStatus.OK],
+    ["getCurrentUser", "me", HttpStatus.OK],
   ] as const)(
     "declares the %s route as %s with status %s",
     (methodName, path, status) => {
@@ -188,6 +198,35 @@ describe("AuthController", () => {
       expect(Reflect.getMetadata(HTTP_CODE_METADATA, method)).toBe(status);
     },
   );
+
+  it("declares authenticated pre-tenant GET /auth/me and delegates verified identity", async () => {
+    const identity = { userId: "user-id" };
+    const bootstrapResponse = {
+      profile: multiTenantResponse.profile,
+      memberships: multiTenantResponse.memberships,
+      selectedMembership: multiTenantResponse.memberships[0],
+    };
+    getCurrentUser.mockResolvedValue(bootstrapResponse);
+
+    await expect(
+      controller.getCurrentUser({ user: identity }),
+    ).resolves.toBe(bootstrapResponse);
+    expect(getCurrentUser).toHaveBeenCalledWith(identity);
+    expect(Reflect.getMetadata(PATH_METADATA, controller.getCurrentUser)).toBe(
+      "me",
+    );
+    expect(
+      Reflect.getMetadata(METHOD_METADATA, controller.getCurrentUser),
+    ).toBe(RequestMethod.GET);
+    const guards = Reflect.getMetadata(
+      GUARDS_METADATA,
+      controller.getCurrentUser,
+    ) as unknown[];
+    expect(guards).toContain(AuthGuard);
+    expect(guards).not.toContain(TenantContextGuard);
+    expect(guards).not.toContain(RolesGuard);
+    expect(controller.getCurrentUser).toHaveLength(1);
+  });
 
   it.each([
     new ConflictException("An account with this email already exists."),

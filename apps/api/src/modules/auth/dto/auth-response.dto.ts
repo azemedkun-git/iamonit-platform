@@ -2,6 +2,7 @@ import { ApiProperty } from "@nestjs/swagger";
 import {
   AUTH_ROLES,
   MEMBERSHIP_STATUSES,
+  AuthBootstrapResponse,
   AuthResponse,
   AuthRole,
   AuthSession,
@@ -135,6 +136,27 @@ export class MultiTenantAuthResponseDto implements MultiTenantAuthResponse {
       ? new AuthSessionDto(response.session)
       : null;
     this.requiresEmailConfirmation = response.requiresEmailConfirmation;
+    this.profile = new UserProfileDto(response.profile);
+    this.memberships = response.memberships.map(
+      (membership) => new MembershipSummaryDto(membership),
+    );
+    this.selectedMembership = response.selectedMembership
+      ? new MembershipSummaryDto(response.selectedMembership)
+      : null;
+  }
+}
+
+export class AuthBootstrapResponseDto implements AuthBootstrapResponse {
+  @ApiProperty({ type: UserProfileDto })
+  profile: UserProfileDto;
+
+  @ApiProperty({ type: [MembershipSummaryDto] })
+  memberships: MembershipSummaryDto[];
+
+  @ApiProperty({ type: MembershipSummaryDto, nullable: true })
+  selectedMembership: MembershipSummaryDto | null;
+
+  constructor(response: AuthBootstrapResponse) {
     this.profile = new UserProfileDto(response.profile);
     this.memberships = response.memberships.map(
       (membership) => new MembershipSummaryDto(membership),

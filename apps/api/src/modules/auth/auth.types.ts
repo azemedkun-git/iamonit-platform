@@ -64,6 +64,12 @@ export interface AuthUserProfile extends UserProfileRecord {
   email: string;
 }
 
+export interface AuthBootstrapResponse {
+  profile: AuthUserProfile;
+  memberships: MembershipSummary[];
+  selectedMembership: MembershipSummary | null;
+}
+
 export interface MultiTenantAuthResponse {
   session: AuthSession | null;
   requiresEmailConfirmation: boolean;

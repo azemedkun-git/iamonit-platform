@@ -73,6 +73,12 @@ describe("AuthService", () => {
       fullName: "Dana Dispatcher",
       phone: "+13125550101",
     });
+    const findBootstrapProfileByUserId = jest.fn().mockResolvedValue({
+      userId: user.id,
+      email: registration.email,
+      fullName: "Dana Dispatcher",
+      phone: "+13125550101",
+    });
     const findActiveMembershipsByUserId = jest.fn().mockResolvedValue([]);
     const publicClient = {
       auth: { signUp, signInWithPassword },
@@ -86,6 +92,7 @@ describe("AuthService", () => {
       createUserProfile,
       findAppUserById,
       findUserProfileById,
+      findBootstrapProfileByUserId,
       findActiveMembershipsByUserId,
     } as unknown as AuthRepository;
     const config = { getOrThrow: jest.fn() } as unknown as ConfigService;
@@ -106,6 +113,7 @@ describe("AuthService", () => {
       createUserProfile,
       findAppUserById,
       findUserProfileById,
+      findBootstrapProfileByUserId,
       findActiveMembershipsByUserId,
     };
   }
@@ -642,5 +650,97 @@ describe("AuthService", () => {
       missing.service.loginMultiTenant(registration),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(missing.findAppUserById).not.toHaveBeenCalled();
+  });
+
+  it("bootstraps profile and zero memberships from verified identity.userId", async () => {
+    const {
+      service,
+      findBootstrapProfileByUserId,
+      findActiveMembershipsByUserId,
+      findAppUserById,
+    } = setup();
+    const identity = { userId: "auth-user-id" };
+
+    await expect(service.getCurrentUser(identity)).resolves.toEqual({
+      profile: {
+        userId: user.id,
+        email: registration.email,
+        fullName: "Dana Dispatcher",
+        phone: "+13125550101",
+      },
+      memberships: [],
+      selectedMembership: null,
+    });
+    expect(findBootstrapProfileByUserId).toHaveBeenCalledWith(identity.userId);
+    expect(findActiveMembershipsByUserId).toHaveBeenCalledWith(identity.userId);
+    expect(findAppUserById).not.toHaveBeenCalled();
+  });
+
+  it("selects the exact sole active membership and preserves its tenant role", async () => {
+    const { service, findActiveMembershipsByUserId } = setup();
+    const membership = {
+      membershipId: "membership-id",
+      tenantId: "tenant-id",
+      tenantName: "Acme Transport",
+      role: "dispatcher",
+      status: "active",
+    };
+    findActiveMembershipsByUserId.mockResolvedValueOnce([membership]);
+
+    await expect(
+      service.getCurrentUser({ userId: user.id }),
+    ).resolves.toMatchObject({
+      memberships: [membership],
+      selectedMembership: membership,
+    });
+  });
+
+  it("preserves multiple active memberships without selecting the first", async () => {
+    const { service, findActiveMembershipsByUserId } = setup();
+    const memberships = [
+      {
+        membershipId: "membership-a",
+        tenantId: "tenant-a",
+        tenantName: "Alpha Towing",
+        role: "admin",
+        status: "active",
+      },
+      {
+        membershipId: "membership-b",
+        tenantId: "tenant-b",
+        tenantName: "Bravo Recovery",
+        role: "car_puller",
+        status: "active",
+      },
+    ];
+    findActiveMembershipsByUserId.mockResolvedValueOnce(memberships);
+
+    await expect(
+      service.getCurrentUser({ userId: user.id }),
+    ).resolves.toMatchObject({ memberships, selectedMembership: null });
+  });
+
+  it("safely forbids bootstrap when no application profile exists", async () => {
+    const { service, findBootstrapProfileByUserId } = setup();
+    findBootstrapProfileByUserId.mockResolvedValueOnce(null);
+
+    await expect(
+      service.getCurrentUser({ userId: user.id }),
+    ).rejects.toMatchObject({
+      status: 403,
+      message: "Account access is not configured.",
+    });
+  });
+
+  it.each([
+    [{ code: "08006", message: "database URL" }, 503, "Database is unavailable."],
+    [new Error("SQL text and credentials"), 500, "Account bootstrap could not be completed."],
+  ])("maps bootstrap database failures safely", async (failure, status, message) => {
+    const { service, findBootstrapProfileByUserId } = setup();
+    findBootstrapProfileByUserId.mockRejectedValueOnce(failure);
+
+    await expect(
+      service.getCurrentUser({ userId: user.id }),
+    ).rejects.toMatchObject({ status, message });
   });
 });

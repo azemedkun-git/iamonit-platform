@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { Pool, PoolClient } from "pg";
 import {
   AuthRole,
+  AuthUserProfile,
   MembershipStatus,
   MembershipSummary,
   UserProfileRecord,
@@ -229,6 +230,37 @@ export class AuthRepository {
     return profile
       ? {
           userId: profile.user_id,
+          fullName: profile.full_name,
+          phone: profile.phone,
+        }
+      : null;
+  }
+
+  async findBootstrapProfileByUserId(
+    userId: string,
+  ): Promise<AuthUserProfile | null> {
+    const result = await this.pool.query<{
+      user_id: string;
+      email: string;
+      full_name: string;
+      phone: string;
+    }>(
+      `SELECT user_profiles.user_id,
+              auth_users.email,
+              user_profiles.full_name,
+              user_profiles.phone
+       FROM public.user_profiles AS user_profiles
+       INNER JOIN auth.users AS auth_users
+         ON auth_users.id = user_profiles.user_id
+       WHERE user_profiles.user_id = $1`,
+      [userId],
+    );
+    const profile = result.rows[0];
+
+    return profile
+      ? {
+          userId: profile.user_id,
+          email: profile.email,
           fullName: profile.full_name,
           phone: profile.phone,
         }
